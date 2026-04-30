@@ -352,12 +352,21 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
   const indices: number[] = [];
   let vIndex = 0;
   const cfg = KIND_DEFAULTS[kind];
+  // Per-way y jitter so two same-kind streets crossing each other don't
+  // z-fight on the intersection patch. Range ±2.4 mm — invisible to the
+  // player but enough for a stable depth ordering. Polygon clipping for
+  // true overlap removal would be far more expensive.
+  const Y_JITTER_STEP = 0.0008;
 
+  let wayIdx = 0;
   for (const w of ways) {
     const pts = w.geometry;
     if (pts.length < 2) continue;
     const halfW = widthFor(kind, w) / 2;
     const local = pts.map((p) => proj.toLocal(p.lat, p.lon));
+    const yJitter = (wayIdx % 7 - 3) * Y_JITTER_STEP;
+    const yBase = cfg.y + yJitter;
+    wayIdx++;
 
     // Edge normals + lengths between consecutive points (drop degenerate edges).
     type Edge = { nx: number; nz: number; len: number };
@@ -412,10 +421,10 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
       const len = edges[i].len;
       const v0 = traveled / cfg.lengthScale;
       const v1 = (traveled + len) / cfg.lengthScale;
-      positions.push(a.x + oa.ox, cfg.y, a.z + oa.oz); uvs.push(0, v0);
-      positions.push(a.x - oa.ox, cfg.y, a.z - oa.oz); uvs.push(1, v0);
-      positions.push(b.x + ob.ox, cfg.y, b.z + ob.oz); uvs.push(0, v1);
-      positions.push(b.x - ob.ox, cfg.y, b.z - ob.oz); uvs.push(1, v1);
+      positions.push(a.x + oa.ox, yBase, a.z + oa.oz); uvs.push(0, v0);
+      positions.push(a.x - oa.ox, yBase, a.z - oa.oz); uvs.push(1, v0);
+      positions.push(b.x + ob.ox, yBase, b.z + ob.oz); uvs.push(0, v1);
+      positions.push(b.x - ob.ox, yBase, b.z - ob.oz); uvs.push(1, v1);
       // Faces +y (up).
       indices.push(vIndex, vIndex + 2, vIndex + 1);
       indices.push(vIndex + 1, vIndex + 2, vIndex + 3);
