@@ -29,12 +29,12 @@ export type TileKey = string; // `${tx}_${tz}`
 
 export type RoadKind = "car" | "bike" | "bus" | "tram" | "footway" | "river";
 
+// Network-side tile shape: raw Overpass response + tile coords. Element
+// classification (buildings/roads/trees/peaks) happens inside the worker so
+// the main thread never iterates the OSM element list.
 export type TileData = {
   key: TileKey;
   tx: number;
   tz: number;
-  buildings: OsmWay[];
-  roads: Record<RoadKind, OsmWay[]>;
-  trees: OsmNode[];
-  peaks: OsmNode[];
+  data: OverpassResponse;
 };

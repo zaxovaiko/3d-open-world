@@ -3,7 +3,7 @@ import type { TileData } from "../types";
 import { fetchTile } from "./overpass";
 import { TILE_SIZE, type Projector } from "./project";
 
-const RING = 2; // 5x5 candidate grid; view-cone trims most.
+const RING = 1; // 3x3 candidate grid; view-cone trims most.
 const COS_CONE = -0.4; // ~113° forward cone (keeps current tile + sides + a bit of behind).
 
 type State = Map<string, TileData>;
@@ -26,7 +26,6 @@ export function useTileStreamer(
   const planKey = `${tx}_${tz}_${fOct}`;
 
   useEffect(() => {
-    console.log("[tile-streamer] effect", { planKey, last: lastDesired.current, size: tiles.size });
     if (lastDesired.current === planKey && tiles.size > 0) return;
     lastDesired.current = planKey;
 
@@ -68,10 +67,8 @@ export function useTileStreamer(
       if (tiles.has(key) || inFlight.current.has(key)) continue;
       const [sx, sz] = key.split("_").map(Number);
       inFlight.current.add(key);
-      console.log("[tile-streamer] fetch", key);
       fetchTile(sx, sz, proj)
         .then((td) => {
-          console.log("[tile-streamer] got", key, { b: td.buildings.length, r: Object.values(td.roads).reduce((a,r)=>a+r.length,0) });
           setTiles((prev) => {
             const next = new Map(prev);
             next.set(key, td);

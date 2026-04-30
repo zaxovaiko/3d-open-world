@@ -1,12 +1,15 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Physics } from "@react-three/rapier";
-import { Sky, Stats } from "@react-three/drei";
+import { AdaptiveDpr, AdaptiveEvents } from "@react-three/drei";
 import { Suspense, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { LatLon } from "../types";
 import { makeProjector } from "../world/project";
 import { useTileStreamer } from "../world/tile-streamer";
+import type { Built } from "../world/tile-build-client";
 import { Tile, Ground } from "./tile";
+import { WorldMeshes, type BuiltEntry } from "./world-meshes";
+import { Prewarm } from "./prewarm";
 import { Car } from "./car";
 import { FollowCamera } from "./follow-camera";
 import { Hud } from "../ui/hud";
@@ -72,16 +75,22 @@ export function Scene({ origin }: Props) {
   return (
     <>
       <Canvas
-        camera={{ position: [0, 8, -15], fov: 60, near: 0.1, far: 1500 }}
-        dpr={1}
+        camera={{ position: [0, 8, -15], fov: 60, near: 0.1, far: 700 }}
+        dpr={[0.6, 1]}
         gl={{ antialias: false, powerPreference: "high-performance", stencil: false, depth: true }}
+        onCreated={({ scene, gl }) => {
+          scene.background = new THREE.Color("#cfd9e0");
+          gl.setClearColor("#cfd9e0");
+        }}
       >
-        <Sky sunPosition={[100, 50, 100]} />
+        <AdaptiveDpr pixelated />
+        <AdaptiveEvents />
         <hemisphereLight args={["#cbd9e8", "#3a4a3a", 0.9]} />
         <directionalLight position={[100, 200, 100]} intensity={1.0} />
-        <fog attach="fog" args={["#cfd9e0", 200, 900]} />
+        <fog attach="fog" args={["#cfd9e0", 100, 600]} />
 
         <Suspense fallback={null}>
+          <Prewarm />
           <Physics gravity={[0, -9.81, 0]} timeStep={1 / 60} interpolate paused={paused}>
             <Ground />
             <World proj={proj} carPos={carPos} forward={forward} />
@@ -90,7 +99,6 @@ export function Scene({ origin }: Props) {
             <CameraDirectionWatcher onChange={onForward} />
           </Physics>
         </Suspense>
-        <Stats />
       </Canvas>
       <Hud ref={speedDomRef} />
     </>
@@ -117,51 +125,41 @@ function World({
   forward: { x: number; z: number };
 }) {
   const tiles = useTileStreamer(proj, carPos, forward);
-  const groupRefs = useRef<Map<string, THREE.Group>>(new Map());
-  const refSetters = useRef<Map<string, (el: THREE.Group | null) => void>>(new Map());
-  const frustum = useMemo(() => new THREE.Frustum(), []);
-  const projScreen = useMemo(() => new THREE.Matrix4(), []);
-  const sphere = useMemo(() => new THREE.Sphere(), []);
+  const [builtMap, setBuiltMap] = useState<Map<string, Built>>(new Map());
 
-  function refFor(key: string) {
-    let s = refSetters.current.get(key);
-    if (!s) {
-      s = (el) => {
-        if (el) groupRefs.current.set(key, el);
-        else groupRefs.current.delete(key);
-      };
-      refSetters.current.set(key, s);
-    }
-    return s;
-  }
+  const onBuilt = useCallback((key: string, b: Built) => {
+    setBuiltMap((prev) => {
+      const next = new Map(prev);
+      next.set(key, b);
+      return next;
+    });
+  }, []);
 
-  useFrame(({ camera }) => {
-    projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    frustum.setFromProjectionMatrix(projScreen);
-    for (const [, g] of groupRefs.current) {
-      let anyVisible = false;
-      for (const child of g.children) {
-        const mesh = child as THREE.Mesh;
-        const geom = mesh.geometry as THREE.BufferGeometry | undefined;
-        if (geom?.boundingSphere) {
-          sphere.copy(geom.boundingSphere).applyMatrix4(mesh.matrixWorld);
-          mesh.visible = frustum.intersectsSphere(sphere);
-        } else {
-          mesh.visible = true;
-        }
-        if (mesh.visible) anyVisible = true;
-      }
-      g.visible = anyVisible;
+  const onUnmount = useCallback((key: string) => {
+    setBuiltMap((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+
+  // Only feed WorldMeshes the entries whose tiles are still in the active set.
+  const builtList = useMemo<BuiltEntry[]>(() => {
+    const active = new Set(tiles.map((t) => t.key));
+    const out: BuiltEntry[] = [];
+    for (const [k, data] of builtMap) {
+      if (active.has(k)) out.push({ key: k, data });
     }
-  });
+    return out;
+  }, [tiles, builtMap]);
 
   return (
     <>
       {tiles.map((t) => (
-        <group key={t.key} ref={refFor(t.key)}>
-          <Tile tile={t} proj={proj} />
-        </group>
+        <Tile key={t.key} tile={t} proj={proj} onBuilt={onBuilt} onUnmount={onUnmount} />
       ))}
+      <WorldMeshes built={builtList} />
     </>
   );
 }

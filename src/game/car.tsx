@@ -17,11 +17,22 @@ function CarModel() {
         const m = o as THREE.Mesh;
         m.castShadow = false;
         m.receiveShadow = false;
-        // Re-tone material to be slightly more vibrant
-        const mat = m.material as THREE.MeshStandardMaterial | undefined;
-        if (mat && "metalness" in mat) {
-          mat.envMapIntensity = 1.2;
-        }
+        // Replace PBR (MeshStandardMaterial) with cheaper Lambert. Keeps the
+        // baseColorMap / texture, drops metalness/roughness fragment math.
+        const swap = (mat: THREE.Material): THREE.Material => {
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            return new THREE.MeshLambertMaterial({
+              map: mat.map,
+              color: mat.color,
+              transparent: mat.transparent,
+              opacity: mat.opacity,
+              alphaTest: mat.alphaTest,
+              side: mat.side,
+            });
+          }
+          return mat;
+        };
+        m.material = Array.isArray(m.material) ? m.material.map(swap) : swap(m.material as THREE.Material);
       }
     });
     return c;
@@ -44,6 +55,7 @@ const SUSPENSION_REST = 0.18;
 const ENGINE_FORCE = 5500;
 const BRAKE_FORCE = 250;
 const MAX_STEER = 0.5;
+const MAX_SPEED_KMH = 160;
 
 const wheelOffsets: Array<[number, number, number]> = [
   [-0.82, -0.1, 1.18], // FL
@@ -111,6 +123,8 @@ export function Car({ spawn = [0, 4, 0], onPose }: Props) {
 
   const tmpPos = useMemo(() => new THREE.Vector3(), []);
   const tmpQuat = useMemo(() => new THREE.Quaternion(), []);
+  const tmpInvQuat = useMemo(() => new THREE.Quaternion(), []);
+  const tmpLocal = useMemo(() => new THREE.Vector3(), []);
   const engineRef = useRef(0);
   const steerRef = useRef(0);
 
@@ -163,9 +177,14 @@ export function Car({ spawn = [0, 4, 0], onPose }: Props) {
       steerRef.current = 0;
     }
 
+    // Speed limiter: cut forward throttle past MAX_SPEED_KMH so the car can't
+    // keep accelerating; reverse and braking always allowed.
+    const speedKmh = c.currentVehicleSpeed() * 3.6; // signed
+    const limitForward = speedKmh >= MAX_SPEED_KMH;
+
     // Smooth acceleration: ramp engine force toward target (~0.6s to full throttle).
     const targetEngine =
-      (k.forward ? ENGINE_FORCE : 0) + (k.back ? -ENGINE_FORCE * 0.6 : 0);
+      (k.forward && !limitForward ? ENGINE_FORCE : 0) + (k.back ? -ENGINE_FORCE * 0.6 : 0);
     const engineLerp = 1 - Math.exp(-dt * 4); // ~25% per 60ms
     engineRef.current += (targetEngine - engineRef.current) * engineLerp;
     c.setWheelEngineForce(2, engineRef.current);
@@ -192,12 +211,12 @@ export function Car({ spawn = [0, 4, 0], onPose }: Props) {
       const steerAng = c.wheelSteering(i) ?? 0;
       const rot = c.wheelRotation(i) ?? 0;
       if (hp) {
-        // hp is world space; convert to body local
+        // hp is world space; convert to body local. Reuse buffers — no per-frame allocs.
         const t = body.translation();
         const q = body.rotation();
-        const inv = new THREE.Quaternion(q.x, q.y, q.z, q.w).invert();
-        const local = new THREE.Vector3(hp.x - t.x, hp.y - t.y, hp.z - t.z).applyQuaternion(inv);
-        m.position.set(local.x, local.y - sl, local.z);
+        tmpInvQuat.set(q.x, q.y, q.z, q.w).invert();
+        tmpLocal.set(hp.x - t.x, hp.y - t.y, hp.z - t.z).applyQuaternion(tmpInvQuat);
+        m.position.set(tmpLocal.x, tmpLocal.y - sl, tmpLocal.z);
         // Compose: cylinder lays along X (Z=π/2 base), then spin about wheel axle (X), then steer (Y).
         // Order "YXZ" applies Z first, then X, then Y: cylinder oriented → spin → steer.
         m.rotation.set(rot, steerAng, Math.PI / 2, "YXZ");
@@ -241,21 +260,21 @@ export function Car({ spawn = [0, 4, 0], onPose }: Props) {
           {/* Tire */}
           <mesh>
             <cylinderGeometry args={[WHEEL_RADIUS, WHEEL_RADIUS, 0.32, 18]} />
-            <meshStandardMaterial color="#0a0a0a" roughness={0.95} metalness={0.05} />
+            <meshLambertMaterial color="#0a0a0a" />
           </mesh>
           {/* Rim outer cap */}
           <mesh position={[0, 0.17, 0]}>
             <cylinderGeometry args={[WHEEL_RADIUS * 0.65, WHEEL_RADIUS * 0.65, 0.02, 12]} />
-            <meshStandardMaterial color="#c0c4c8" metalness={0.9} roughness={0.25} />
+            <meshLambertMaterial color="#c0c4c8" />
           </mesh>
           <mesh position={[0, -0.17, 0]}>
             <cylinderGeometry args={[WHEEL_RADIUS * 0.65, WHEEL_RADIUS * 0.65, 0.02, 12]} />
-            <meshStandardMaterial color="#c0c4c8" metalness={0.9} roughness={0.25} />
+            <meshLambertMaterial color="#c0c4c8" />
           </mesh>
           {/* Hub center */}
           <mesh position={[0, 0.18, 0]}>
             <cylinderGeometry args={[0.06, 0.06, 0.02, 8]} />
-            <meshStandardMaterial color="#202020" metalness={0.5} roughness={0.4} />
+            <meshLambertMaterial color="#202020" />
           </mesh>
         </group>
       ))}

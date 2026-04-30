@@ -1,5 +1,5 @@
 import { get, set } from "idb-keyval";
-import type { OverpassResponse, OsmWay, OsmNode, RoadKind, TileData, TileKey } from "../types";
+import type { OverpassResponse, TileData, TileKey } from "../types";
 import { tileBoundsLatLon, type Projector } from "./project";
 
 const ENDPOINTS = [
@@ -85,6 +85,7 @@ class Limiter {
 
 const limiter = new Limiter(2);
 
+// Network + idb only. Element classification happens inside the worker.
 export async function fetchTile(
   tx: number,
   tz: number,
@@ -100,45 +101,10 @@ export async function fetchTile(
     const bounds = tileBoundsLatLon(tx, tz, proj);
     const query = buildQuery(bounds);
     data = await limiter.run(() => fetchOverpass(query, signal));
-    await set(ck, { ts: Date.now(), data } satisfies CacheEntry).catch(() => {});
+    // Fire-and-forget cache write — never block the main thread on idb.
+    set(ck, { ts: Date.now(), data } satisfies CacheEntry).catch(() => {});
   }
-
-  const buildings: OsmWay[] = [];
-  const roads: Record<RoadKind, OsmWay[]> = {
-    car: [],
-    bike: [],
-    bus: [],
-    tram: [],
-    footway: [],
-    river: [],
-  };
-  const trees: OsmNode[] = [];
-  const peaks: OsmNode[] = [];
-
-  for (const el of data.elements) {
-    if (el.type === "way" && el.geometry?.length) {
-      const t = el.tags ?? {};
-      if (t.building) {
-        buildings.push(el);
-      } else if (t.waterway) {
-        roads.river.push(el);
-      } else if (t.railway === "tram") {
-        roads.tram.push(el);
-      } else if (t.highway) {
-        const h = t.highway;
-        if (h === "cycleway") roads.bike.push(el);
-        else if (h === "busway" || t.busway) roads.bus.push(el);
-        else if (h === "footway" || h === "path" || h === "pedestrian" || h === "steps")
-          roads.footway.push(el);
-        else roads.car.push(el);
-      }
-    } else if (el.type === "node") {
-      if (el.tags?.natural === "tree") trees.push(el);
-      else if (el.tags?.natural === "peak") peaks.push(el);
-    }
-  }
-
-  return { key: tileKey(tx, tz), tx, tz, buildings, roads, trees, peaks };
+  return { key: tileKey(tx, tz), tx, tz, data };
 }
 
 export { tileKey };
