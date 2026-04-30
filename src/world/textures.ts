@@ -1,5 +1,10 @@
 import * as THREE from "three";
 
+// Hi-res canvas textures + max anisotropy. Textures generate once at startup
+// and bind once; mip-mapping handles distance + GPU bandwidth cost. Frame
+// cost is unchanged from the previous low-res versions because samplers
+// pick a lower mip level for distant fragments automatically.
+
 let buildingTex: THREE.CanvasTexture | null = null;
 const kindTexCache: Partial<Record<string, THREE.CanvasTexture>> = {};
 let roadTex: THREE.CanvasTexture | null = null;
@@ -10,254 +15,324 @@ let tramTex: THREE.CanvasTexture | null = null;
 let footwayTex: THREE.CanvasTexture | null = null;
 let waterTex: THREE.CanvasTexture | null = null;
 
+const ANISO = 16; // Three clamps to renderer.capabilities.getMaxAnisotropy().
+
+function tuneTexture(tex: THREE.CanvasTexture) {
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = ANISO;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = true;
+}
+
+// Mulberry32 PRNG so noise is deterministic per call (no GC churn from Math.random).
+function rng(seed: number) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export function buildingTexture(): THREE.CanvasTexture {
   if (buildingTex) return buildingTex;
-  const W = 128, H = 128;
+  const W = 512, H = 512;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
   g.fillStyle = "#c9c4bd";
   g.fillRect(0, 0, W, H);
-  // Window grid: 4 cols x 4 rows
-  const cols = 4, rows = 4;
-  const cw = W / cols;
-  const rh = H / rows;
-  g.fillStyle = "#3a4554";
+  const cols = 8, rows = 8;
+  const cw = W / cols, rh = H / rows;
   for (let r = 0; r < rows; r++) {
     for (let cc = 0; cc < cols; cc++) {
-      const x = cc * cw + cw * 0.2;
-      const y = r * rh + rh * 0.2;
-      g.fillRect(x, y, cw * 0.6, rh * 0.55);
+      g.fillStyle = "#3a4554";
+      g.fillRect(cc * cw + cw * 0.18, r * rh + rh * 0.18, cw * 0.64, rh * 0.6);
     }
   }
-  // Subtle horizontal floor lines
-  g.strokeStyle = "rgba(0,0,0,0.15)";
-  g.lineWidth = 1;
-  for (let r = 1; r < rows; r++) {
-    g.beginPath();
-    g.moveTo(0, r * rh);
-    g.lineTo(W, r * rh);
-    g.stroke();
-  }
   buildingTex = new THREE.CanvasTexture(c);
-  buildingTex.wrapS = THREE.RepeatWrapping;
-  buildingTex.wrapT = THREE.RepeatWrapping;
-  buildingTex.anisotropy = 4;
+  tuneTexture(buildingTex);
   return buildingTex;
 }
 
 type BuildingKindStyle = {
   base: string;
+  baseAlt: string;
   window: string;
+  windowLit: string;
   windowCols: number;
   windowRows: number;
-  windowFill: number; // 0..1 fraction of cell taken by window
+  windowFill: number;
 };
 
 const KIND_STYLES: Record<string, BuildingKindStyle> = {
-  residential: { base: "#d8b079", window: "#3a2e22", windowCols: 4, windowRows: 4, windowFill: 0.55 },
-  commercial: { base: "#6a8fb3", window: "#0f1d2e", windowCols: 6, windowRows: 6, windowFill: 0.85 },
-  industrial: { base: "#8b8a85", window: "#2a2a26", windowCols: 3, windowRows: 2, windowFill: 0.4 },
-  civic: { base: "#e8dcc4", window: "#5b4a32", windowCols: 4, windowRows: 5, windowFill: 0.5 },
-  generic: { base: "#c9c4bd", window: "#3a4554", windowCols: 4, windowRows: 4, windowFill: 0.6 },
+  residential: { base: "#d8b079", baseAlt: "#c89f68", window: "#3a2e22", windowLit: "#e8c46a", windowCols: 8, windowRows: 10, windowFill: 0.55 },
+  commercial: { base: "#6a8fb3", baseAlt: "#557da0", window: "#0f1d2e", windowLit: "#90b8da", windowCols: 12, windowRows: 14, windowFill: 0.85 },
+  industrial: { base: "#8b8a85", baseAlt: "#7a7975", window: "#2a2a26", windowLit: "#5a5a52", windowCols: 6, windowRows: 5, windowFill: 0.45 },
+  civic: { base: "#e8dcc4", baseAlt: "#d6c9ae", window: "#5b4a32", windowLit: "#cdb98a", windowCols: 10, windowRows: 12, windowFill: 0.5 },
+  generic: { base: "#c9c4bd", baseAlt: "#b6b1aa", window: "#3a4554", windowLit: "#9aa9bd", windowCols: 8, windowRows: 10, windowFill: 0.6 },
 };
 
 export function buildingKindTexture(kind: string): THREE.CanvasTexture {
   if (kindTexCache[kind]) return kindTexCache[kind] as THREE.CanvasTexture;
   const s = KIND_STYLES[kind] ?? KIND_STYLES.generic;
-  const W = 128, H = 128;
+  const W = 512, H = 512;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
-  g.fillStyle = s.base;
+
+  // Subtle vertical band gradient so the wall isn't a flat colour.
+  const grad = g.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, s.base);
+  grad.addColorStop(1, s.baseAlt);
+  g.fillStyle = grad;
   g.fillRect(0, 0, W, H);
-  // Window grid
+
+  const r = rng(kind.length * 31 + s.windowCols * 13 + s.windowRows);
+
+  // Window grid with deterministic per-window lit/dark variation.
   const cw = W / s.windowCols;
   const rh = H / s.windowRows;
-  g.fillStyle = s.window;
-  for (let r = 0; r < s.windowRows; r++) {
-    for (let cc = 0; cc < s.windowCols; cc++) {
+  for (let row = 0; row < s.windowRows; row++) {
+    for (let col = 0; col < s.windowCols; col++) {
       const padX = (cw * (1 - s.windowFill)) / 2;
       const padY = (rh * (1 - s.windowFill)) / 2;
-      g.fillRect(cc * cw + padX, r * rh + padY, cw * s.windowFill, rh * s.windowFill);
+      const x = col * cw + padX;
+      const y = row * rh + padY;
+      const ww = cw * s.windowFill;
+      const wh = rh * s.windowFill;
+
+      // Frame.
+      g.fillStyle = "rgba(0,0,0,0.35)";
+      g.fillRect(x - 1, y - 1, ww + 2, wh + 2);
+
+      // Glass — ~25% lit on commercial/civic, fewer on residential.
+      const lit = (kind === "commercial" || kind === "civic") ? r() < 0.28 : r() < 0.12;
+      g.fillStyle = lit ? s.windowLit : s.window;
+      g.fillRect(x, y, ww, wh);
+
+      // Vertical mullion + horizontal sill on each window.
+      g.fillStyle = "rgba(0,0,0,0.25)";
+      g.fillRect(x + ww / 2 - 0.5, y, 1, wh);
+      g.fillRect(x, y + wh / 2 - 0.5, ww, 1);
     }
   }
-  // Subtle floor lines
-  g.strokeStyle = "rgba(0,0,0,0.15)";
-  g.lineWidth = 1;
-  for (let r = 1; r < s.windowRows; r++) {
+
+  // Floor slab lines between rows.
+  g.strokeStyle = "rgba(0,0,0,0.18)";
+  g.lineWidth = 1.5;
+  for (let row = 1; row < s.windowRows; row++) {
     g.beginPath();
-    g.moveTo(0, r * rh);
-    g.lineTo(W, r * rh);
+    g.moveTo(0, row * rh);
+    g.lineTo(W, row * rh);
     g.stroke();
   }
-  // Industrial corrugated overlay
+
+  // Style-specific overlays.
   if (kind === "industrial") {
-    g.strokeStyle = "rgba(0,0,0,0.18)";
-    for (let x = 0; x < W; x += 6) {
+    g.strokeStyle = "rgba(0,0,0,0.16)";
+    g.lineWidth = 1;
+    for (let x = 0; x < W; x += 8) {
       g.beginPath();
       g.moveTo(x, 0);
       g.lineTo(x, H);
       g.stroke();
     }
   }
-  // Civic stone overlay (random rectangles)
   if (kind === "civic") {
-    g.strokeStyle = "rgba(0,0,0,0.15)";
-    for (let r = 0; r < s.windowRows; r++) {
+    g.strokeStyle = "rgba(0,0,0,0.12)";
+    g.lineWidth = 1;
+    for (let row = 0; row < s.windowRows; row++) {
       g.beginPath();
-      g.moveTo(0, (r + 0.5) * rh);
-      g.lineTo(W, (r + 0.5) * rh);
+      g.moveTo(0, (row + 0.5) * rh);
+      g.lineTo(W, (row + 0.5) * rh);
       g.stroke();
     }
   }
+
+  // Subtle vertical streaks (rain stains) — adds realism, hides repetition.
+  for (let i = 0; i < 30; i++) {
+    g.fillStyle = `rgba(0,0,0,${0.04 + r() * 0.05})`;
+    const sx = r() * W;
+    const sw = 1 + r() * 2;
+    g.fillRect(sx, 0, sw, H);
+  }
+
   const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 4;
+  tuneTexture(tex);
   kindTexCache[kind] = tex;
   return tex;
 }
 
 export function roadTexture(): THREE.CanvasTexture {
   if (roadTex) return roadTex;
-  const W = 64, H = 256;
+  const W = 256, H = 1024;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
+
+  // Asphalt base with subtle vertical streaking.
   g.fillStyle = "#2b2b2b";
   g.fillRect(0, 0, W, H);
-  // Speckle for asphalt
-  for (let i = 0; i < 800; i++) {
-    g.fillStyle = `rgba(${20 + Math.random() * 40},${20 + Math.random() * 40},${20 + Math.random() * 40},0.6)`;
-    g.fillRect(Math.random() * W, Math.random() * H, 1, 1);
+  const r = rng(7);
+  for (let i = 0; i < 8000; i++) {
+    const v = 22 + r() * 50;
+    g.fillStyle = `rgba(${v},${v},${v},${0.4 + r() * 0.5})`;
+    g.fillRect(r() * W, r() * H, 1, 1);
   }
-  // Center dashed line
+  // Wider tire-wear lanes (slightly darker tracks).
+  g.fillStyle = "rgba(0,0,0,0.15)";
+  g.fillRect(W * 0.18, 0, 8, H);
+  g.fillRect(W * 0.82 - 8, 0, 8, H);
+
+  // White edge stripes.
+  g.fillStyle = "#dedbcf";
+  g.fillRect(2, 0, 4, H);
+  g.fillRect(W - 6, 0, 4, H);
+
+  // Center dashed line.
   g.fillStyle = "#e8d96b";
-  const dashLen = 32;
-  const gap = 32;
+  const dashLen = 96;
+  const gap = 96;
   for (let y = 0; y < H; y += dashLen + gap) {
-    g.fillRect(W / 2 - 1.5, y, 3, dashLen);
+    g.fillRect(W / 2 - 4, y, 8, dashLen);
   }
+
   roadTex = new THREE.CanvasTexture(c);
-  roadTex.wrapS = THREE.RepeatWrapping;
-  roadTex.wrapT = THREE.RepeatWrapping;
-  roadTex.anisotropy = 4;
+  tuneTexture(roadTex);
   return roadTex;
 }
 
 export function bikeTexture(): THREE.CanvasTexture {
   if (bikeTex) return bikeTex;
-  const W = 64, H = 128;
+  const W = 128, H = 256;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
   g.fillStyle = "#7a1c1c";
   g.fillRect(0, 0, W, H);
-  // White edge stripes
+  // Speckle for asphalt-on-bike-path feel.
+  const r = rng(11);
+  for (let i = 0; i < 1500; i++) {
+    g.fillStyle = `rgba(0,0,0,${r() * 0.18})`;
+    g.fillRect(r() * W, r() * H, 1, 1);
+  }
   g.fillStyle = "#ffffff";
-  g.fillRect(2, 0, 2, H);
-  g.fillRect(W - 4, 0, 2, H);
-  // Bike emblem
+  g.fillRect(4, 0, 3, H);
+  g.fillRect(W - 7, 0, 3, H);
+  // Bike emblem.
   g.strokeStyle = "#ffffff";
-  g.lineWidth = 2;
+  g.lineWidth = 3;
   g.beginPath();
-  g.arc(W / 2 - 8, H / 2 + 14, 7, 0, Math.PI * 2);
-  g.arc(W / 2 + 8, H / 2 + 14, 7, 0, Math.PI * 2);
+  g.arc(W / 2 - 14, H / 2 + 24, 12, 0, Math.PI * 2);
+  g.arc(W / 2 + 14, H / 2 + 24, 12, 0, Math.PI * 2);
   g.stroke();
   bikeTex = new THREE.CanvasTexture(c);
-  bikeTex.wrapS = THREE.RepeatWrapping;
-  bikeTex.wrapT = THREE.RepeatWrapping;
-  bikeTex.anisotropy = 4;
+  tuneTexture(bikeTex);
   return bikeTex;
 }
 
 export function busTexture(): THREE.CanvasTexture {
   if (busTex) return busTex;
-  const W = 64, H = 256;
+  const W = 128, H = 512;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
   g.fillStyle = "#a82929";
   g.fillRect(0, 0, W, H);
-  for (let i = 0; i < 600; i++) {
-    g.fillStyle = `rgba(0,0,0,${Math.random() * 0.2})`;
-    g.fillRect(Math.random() * W, Math.random() * H, 1, 1);
+  const r = rng(13);
+  for (let i = 0; i < 1500; i++) {
+    g.fillStyle = `rgba(0,0,0,${r() * 0.22})`;
+    g.fillRect(r() * W, r() * H, 1, 1);
   }
-  // BUS text band
   g.fillStyle = "#ffffff";
-  g.font = "bold 18px sans-serif";
+  g.font = "bold 36px sans-serif";
   g.textAlign = "center";
-  g.fillText("BUS", W / 2, 130);
+  g.fillText("BUS", W / 2, 260);
   busTex = new THREE.CanvasTexture(c);
-  busTex.wrapS = THREE.RepeatWrapping;
-  busTex.wrapT = THREE.RepeatWrapping;
-  busTex.anisotropy = 4;
+  tuneTexture(busTex);
   return busTex;
 }
 
 export function tramTexture(): THREE.CanvasTexture {
   if (tramTex) return tramTex;
-  const W = 64, H = 64;
+  const W = 128, H = 128;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
   g.fillStyle = "#3a3530";
   g.fillRect(0, 0, W, H);
-  // Two parallel rails (vertical = along travel)
+  // Two parallel rails.
   g.fillStyle = "#aaaaaa";
-  g.fillRect(W * 0.28, 0, 3, H);
-  g.fillRect(W * 0.68, 0, 3, H);
-  // Crossties (horizontal)
+  g.fillRect(W * 0.28, 0, 6, H);
+  g.fillRect(W * 0.68, 0, 6, H);
+  // Rail highlights.
+  g.fillStyle = "#dadada";
+  g.fillRect(W * 0.28 + 1, 0, 1, H);
+  g.fillRect(W * 0.68 + 1, 0, 1, H);
+  // Crossties.
   g.fillStyle = "#241f1a";
-  for (let y = 0; y < H; y += 12) {
-    g.fillRect(W * 0.18, y, W * 0.62, 3);
+  for (let y = 0; y < H; y += 24) {
+    g.fillRect(W * 0.18, y, W * 0.62, 6);
   }
   tramTex = new THREE.CanvasTexture(c);
-  tramTex.wrapS = THREE.RepeatWrapping;
-  tramTex.wrapT = THREE.RepeatWrapping;
-  tramTex.anisotropy = 4;
+  tuneTexture(tramTex);
   return tramTex;
 }
 
 export function footwayTexture(): THREE.CanvasTexture {
   if (footwayTex) return footwayTex;
-  const W = 64, H = 64;
+  const W = 128, H = 128;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
   g.fillStyle = "#b9b3a8";
   g.fillRect(0, 0, W, H);
-  // Paver grid
-  g.strokeStyle = "rgba(0,0,0,0.25)";
-  g.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
+  // Per-paver subtle colour variation.
+  const r = rng(17);
+  const PCols = 4, PRows = 4;
+  const pcw = W / PCols, prh = H / PRows;
+  for (let row = 0; row < PRows; row++) {
+    for (let col = 0; col < PCols; col++) {
+      const tone = 175 + Math.floor(r() * 25);
+      g.fillStyle = `rgb(${tone},${tone - 5},${tone - 14})`;
+      g.fillRect(col * pcw + 1, row * prh + 1, pcw - 2, prh - 2);
+    }
+  }
+  // Grout grid.
+  g.strokeStyle = "rgba(0,0,0,0.32)";
+  g.lineWidth = 1.5;
+  for (let i = 0; i <= PCols; i++) {
     g.beginPath();
-    g.moveTo(0, (i * H) / 4);
-    g.lineTo(W, (i * H) / 4);
+    g.moveTo((i * W) / PCols, 0);
+    g.lineTo((i * W) / PCols, H);
     g.stroke();
+  }
+  for (let i = 0; i <= PRows; i++) {
     g.beginPath();
-    g.moveTo((i * W) / 4, 0);
-    g.lineTo((i * W) / 4, H);
+    g.moveTo(0, (i * H) / PRows);
+    g.lineTo(W, (i * H) / PRows);
     g.stroke();
   }
   footwayTex = new THREE.CanvasTexture(c);
-  footwayTex.wrapS = THREE.RepeatWrapping;
-  footwayTex.wrapT = THREE.RepeatWrapping;
-  footwayTex.anisotropy = 4;
+  tuneTexture(footwayTex);
   return footwayTex;
 }
 
 export function waterTexture(): THREE.CanvasTexture {
   if (waterTex) return waterTex;
-  const W = 128, H = 128;
+  const W = 256, H = 256;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
@@ -268,45 +343,51 @@ export function waterTexture(): THREE.CanvasTexture {
   grad.addColorStop(1, "#1a4a78");
   g.fillStyle = grad;
   g.fillRect(0, 0, W, H);
-  // Wavy highlights
-  g.strokeStyle = "rgba(255,255,255,0.18)";
-  g.lineWidth = 1.5;
-  for (let i = 0; i < 18; i++) {
+  g.strokeStyle = "rgba(255,255,255,0.16)";
+  g.lineWidth = 2;
+  for (let i = 0; i < 36; i++) {
     g.beginPath();
-    const y = Math.random() * H;
+    const y = (i * H) / 36 + (i % 2) * 4;
     g.moveTo(0, y);
     for (let x = 0; x <= W; x += 8) {
-      g.lineTo(x, y + Math.sin(x * 0.15 + i) * 2);
+      g.lineTo(x, y + Math.sin(x * 0.12 + i) * 3);
     }
     g.stroke();
   }
   waterTex = new THREE.CanvasTexture(c);
-  waterTex.wrapS = THREE.RepeatWrapping;
-  waterTex.wrapT = THREE.RepeatWrapping;
-  waterTex.anisotropy = 4;
+  tuneTexture(waterTex);
   return waterTex;
 }
 
 export function groundTexture(): THREE.CanvasTexture {
   if (groundTex) return groundTex;
-  const W = 128, H = 128;
+  const W = 512, H = 512;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
   g.fillStyle = "#4f7a3a";
   g.fillRect(0, 0, W, H);
-  for (let i = 0; i < 1500; i++) {
-    const r = 60 + Math.random() * 50;
-    const gr = 100 + Math.random() * 50;
-    const b = 40 + Math.random() * 30;
-    g.fillStyle = `rgb(${r},${gr},${b})`;
-    g.fillRect(Math.random() * W, Math.random() * H, 1, 1);
+  const r = rng(23);
+  // Multi-tone speckle for grass blades.
+  for (let i = 0; i < 12000; i++) {
+    const rr = 60 + r() * 50;
+    const gg = 100 + r() * 70;
+    const bb = 40 + r() * 30;
+    g.fillStyle = `rgba(${rr},${gg},${bb},${0.4 + r() * 0.5})`;
+    g.fillRect(r() * W, r() * H, 1, 1);
+  }
+  // Darker patches for clumps.
+  for (let i = 0; i < 80; i++) {
+    g.fillStyle = `rgba(40,70,30,${0.1 + r() * 0.2})`;
+    const cx = r() * W, cy = r() * H;
+    const rr = 6 + r() * 14;
+    g.beginPath();
+    g.arc(cx, cy, rr, 0, Math.PI * 2);
+    g.fill();
   }
   groundTex = new THREE.CanvasTexture(c);
-  groundTex.wrapS = THREE.RepeatWrapping;
-  groundTex.wrapT = THREE.RepeatWrapping;
+  tuneTexture(groundTex);
   groundTex.repeat.set(200, 200);
-  groundTex.anisotropy = 4;
   return groundTex;
 }

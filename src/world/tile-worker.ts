@@ -451,6 +451,9 @@ export type WorkerOutput = {
   roads: Partial<Record<RoadKind, RoadRaw>>;
   trees: TreeInstance[];
   peaks: PeakInstance[];
+  // Centerlines for `car` roads only — flat (x, z) pairs per way. Used by
+  // AI traffic to follow streets without re-parsing geometry on the main thread.
+  carRoadCenterlines: Float32Array[];
 };
 
 self.onmessage = (e: MessageEvent<WorkerInput>) => {
@@ -483,7 +486,21 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   const trees = buildTreeInstances(classified.trees, proj);
   const peaks = buildPeakInstances(classified.peaks, proj);
 
-  const out: WorkerOutput = { reqId, buildings, roads, trees, peaks };
+  // Car-road centerlines for AI driving.
+  const carRoadCenterlines: Float32Array[] = [];
+  for (const w of classified.roads.car) {
+    const pts = w.geometry;
+    if (pts.length < 2) continue;
+    const arr = new Float32Array(pts.length * 2);
+    for (let i = 0; i < pts.length; i++) {
+      const p = proj.toLocal(pts[i].lat, pts[i].lon);
+      arr[i * 2] = p.x;
+      arr[i * 2 + 1] = p.z;
+    }
+    carRoadCenterlines.push(arr);
+  }
+
+  const out: WorkerOutput = { reqId, buildings, roads, trees, peaks, carRoadCenterlines };
 
   // Collect transferable buffers — zero-copy transfer to main thread.
   const transfers: Transferable[] = [];
@@ -500,6 +517,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     const r = roads[k]!;
     transfers.push(r.positions.buffer as ArrayBuffer, r.uvs.buffer as ArrayBuffer, r.indices.buffer as ArrayBuffer);
   }
+  for (const cl of carRoadCenterlines) transfers.push(cl.buffer as ArrayBuffer);
 
   (self as unknown as Worker).postMessage(out, transfers);
 };

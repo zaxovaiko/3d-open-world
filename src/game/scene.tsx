@@ -12,6 +12,7 @@ import { WorldMeshes, type BuiltEntry } from "./world-meshes";
 import { Prewarm } from "./prewarm";
 import { Car } from "./car";
 import { FollowCamera } from "./follow-camera";
+import { AICars } from "./ai-cars";
 import { Hud } from "../ui/hud";
 
 type Props = { origin: LatLon };
@@ -93,7 +94,12 @@ export function Scene({ origin }: Props) {
           <Prewarm />
           <Physics gravity={[0, -9.81, 0]} timeStep={1 / 60} interpolate paused={paused}>
             <Ground />
-            <World proj={proj} carPos={carPos} forward={forward} />
+            <World
+              proj={proj}
+              carPos={carPos}
+              forward={forward}
+              poseRef={poseRef}
+            />
             <Car spawn={[0, 1.2, 0]} onPose={onPose} />
             <FollowCamera targetRef={poseRef} />
             <CameraDirectionWatcher onChange={onForward} />
@@ -119,10 +125,12 @@ function World({
   proj,
   carPos,
   forward,
+  poseRef,
 }: {
   proj: ReturnType<typeof makeProjector>;
   carPos: { x: number; z: number };
   forward: { x: number; z: number };
+  poseRef: React.RefObject<{ pos: THREE.Vector3; quat: THREE.Quaternion } | null>;
 }) {
   const tiles = useTileStreamer(proj, carPos, forward);
   const [builtMap, setBuiltMap] = useState<Map<string, Built>>(new Map());
@@ -160,6 +168,7 @@ function World({
         <Tile key={t.key} tile={t} proj={proj} onBuilt={onBuilt} onUnmount={onUnmount} />
       ))}
       <WorldMeshes built={builtList} />
+      <AICars built={builtList} playerPosRef={poseRef} />
     </>
   );
 }
