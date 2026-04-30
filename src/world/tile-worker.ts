@@ -157,19 +157,6 @@ type PreparedBuilding = {
   bb: { minX: number; maxX: number; minZ: number; maxZ: number };
 };
 
-function pointInRing(px: number, pz: number, ring: Pt[]): boolean {
-  let inside = false;
-  const N = ring.length;
-  for (let i = 0, j = N - 1; i < N; j = i++) {
-    const xi = ring[i].x, zi = ring[i].z;
-    const xj = ring[j].x, zj = ring[j].z;
-    const intersect =
-      zi > pz !== zj > pz && px < ((xj - xi) * (pz - zi)) / (zj - zi) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
-}
-
 function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): PreparedBuilding | null {
   const pts = w.geometry;
   if (pts.length < 4) return null;
@@ -225,41 +212,25 @@ function edgeKey(ax: number, az: number, bx: number, bz: number): string {
 }
 
 type Occlusion = {
-  // Per-building list of neighbor indices whose AABB overlaps and whose height
-  // matters for occlusion. Empty list → all walls exterior, skip per-edge test.
-  neighbors: number[][];
-  // Edges shared with another building (exact endpoints). Both sides hidden.
+  // Edges shared exactly with another building (1cm quantization). Both
+  // sides drop the wall — provably interior to whichever side touches.
   sharedEdges: Set<string>;
 };
 
 function computeOcclusion(prepared: PreparedBuilding[]): Occlusion {
-  const N = prepared.length;
-  const neighbors: number[][] = Array.from({ length: N }, () => []);
   const edgeCount = new Map<string, number>();
-
-  for (let i = 0; i < N; i++) {
-    const a = prepared[i];
-    const ar = a.ring;
-    for (let k = 0; k < ar.length; k++) {
-      const p = ar[k];
-      const q = ar[(k + 1) % ar.length];
+  for (let i = 0; i < prepared.length; i++) {
+    const ring = prepared[i].ring;
+    for (let k = 0; k < ring.length; k++) {
+      const p = ring[k];
+      const q = ring[(k + 1) % ring.length];
       const key = edgeKey(p.x, p.z, q.x, q.z);
       edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1);
     }
-    for (let j = i + 1; j < N; j++) {
-      const b = prepared[j];
-      const ab = a.bb, bb = b.bb;
-      if (ab.maxX < bb.minX || ab.minX > bb.maxX) continue;
-      if (ab.maxZ < bb.minZ || ab.minZ > bb.maxZ) continue;
-      // Symmetric height filter — only register if either could occlude the other.
-      if (b.h >= a.h * 0.5) neighbors[i].push(j);
-      if (a.h >= b.h * 0.5) neighbors[j].push(i);
-    }
   }
-
   const sharedEdges = new Set<string>();
   for (const [k, c] of edgeCount) if (c > 1) sharedEdges.add(k);
-  return { neighbors, sharedEdges };
+  return { sharedEdges };
 }
 
 // Build per-kind raw geometry. Walls hidden by neighbor polygons skipped.
@@ -293,8 +264,6 @@ function buildBuildingsRawFromPrepared(
     }
     baseV += N;
 
-    const nbrs = occ.neighbors[bi];
-    const noNeighbors = nbrs.length === 0;
     let perim = 0;
     for (let i = 0; i < N; i++) {
       const j = (i + 1) % N;
@@ -306,33 +275,11 @@ function buildBuildingsRawFromPrepared(
       const v1 = h / WINDOW_H_M;
       perim += len;
 
-      let occluded = false;
-
-      // Cheap hash: exact-shared edge with any neighbor → both sides hidden.
-      if (!noNeighbors && occ.sharedEdges.has(edgeKey(ax, az, bx, bz))) {
-        occluded = true;
-      } else if (!noNeighbors) {
-        // Sample slightly OUTWARD; if inside a neighbor polygon, this wall is
-        // an internal partition.
-        const mx = (ax + bx) / 2;
-        const mz = (az + bz) / 2;
-        const dx = bx - ax, dz = bz - az;
-        const nl = Math.hypot(dx, dz) || 1;
-        const ox = dz / nl, oz = -dx / nl;
-        const eps = 0.05;
-        const tx = mx + ox * eps;
-        const tz = mz + oz * eps;
-        for (const k of nbrs) {
-          const other = prepared[k];
-          const obb = other.bb;
-          if (tx < obb.minX || tx > obb.maxX || tz < obb.minZ || tz > obb.maxZ) continue;
-          if (pointInRing(tx, tz, other.ring)) {
-            occluded = true;
-            break;
-          }
-        }
-      }
-      if (occluded) continue;
+      // Drop only walls we can prove are interior partitions: edges shared
+      // exactly (1cm quantization) with another building. Point-in-polygon
+      // on a midpoint sample false-positives on non-convex neighbours and
+      // grazing AABB overlaps, so it is no longer applied.
+      if (occ.sharedEdges.has(edgeKey(ax, az, bx, bz))) continue;
 
       positions.push(ax, 0, az); uvs.push(u0, 0);
       positions.push(bx, 0, bz); uvs.push(u1, 0);

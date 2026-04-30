@@ -55,6 +55,7 @@ const SUSPENSION_REST = 0.18;
 const ENGINE_FORCE = 5500;
 const BRAKE_FORCE = 250;
 const MAX_STEER = 0.5;
+const MAX_SPEED_KMH = 160;
 
 const wheelOffsets: Array<[number, number, number]> = [
   [-0.82, -0.1, 1.18], // FL
@@ -176,9 +177,14 @@ export function Car({ spawn = [0, 4, 0], onPose }: Props) {
       steerRef.current = 0;
     }
 
+    // Speed limiter: cut forward throttle past MAX_SPEED_KMH so the car can't
+    // keep accelerating; reverse and braking always allowed.
+    const speedKmh = c.currentVehicleSpeed() * 3.6; // signed
+    const limitForward = speedKmh >= MAX_SPEED_KMH;
+
     // Smooth acceleration: ramp engine force toward target (~0.6s to full throttle).
     const targetEngine =
-      (k.forward ? ENGINE_FORCE : 0) + (k.back ? -ENGINE_FORCE * 0.6 : 0);
+      (k.forward && !limitForward ? ENGINE_FORCE : 0) + (k.back ? -ENGINE_FORCE * 0.6 : 0);
     const engineLerp = 1 - Math.exp(-dt * 4); // ~25% per 60ms
     engineRef.current += (targetEngine - engineRef.current) * engineLerp;
     c.setWheelEngineForce(2, engineRef.current);
