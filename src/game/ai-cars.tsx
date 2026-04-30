@@ -1,46 +1,53 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { CuboidCollider, RigidBody, type RapierRigidBody } from "@react-three/rapier";
+import { useGLTF } from "@react-three/drei";
+import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import * as THREE from "three";
 import type { BuiltEntry } from "./world-meshes";
 
-const COUNT = 14;
+// More cars + multiple GLB variants for visual variety. Variant chosen by
+// instance index so the same slot keeps the same model when streaming.
+const COUNT = 30;
 const SPEED = 9; // m/s ~32 km/h
-const SPAWN_RADIUS = 500; // first-spawn search radius
-const DESPAWN_RADIUS = 1100; // very lenient — cars only recycle when far past fog
+const SPAWN_RADIUS = 500;
+const DESPAWN_RADIUS = 1100;
 const HIDDEN_Y = -200;
 const MIN_GAP_M = 14;
 const SLOW_GAP_M = 26;
 const REPLAN_PADDING = 8;
-const ENDPOINT_GRID_M = 2; // endpoint quantization for connectivity graph
+const ENDPOINT_GRID_M = 2;
+
+const GLB_VARIANTS = [
+  { url: "/ai-cars/sports.glb", targetLength: 4.4, yawOffset: 0 },
+  { url: "/ai-cars/hatchback.glb", targetLength: 3.9, yawOffset: 0 },
+  { url: "/ai-cars/police.glb", targetLength: 4.5, yawOffset: 0 },
+  { url: "/ai-cars/sedan.glb", targetLength: 4.5, yawOffset: 0 },
+  { url: "/ai-cars/sports2.glb", targetLength: 4.4, yawOffset: 0 },
+  { url: "/ai-cars/pickup.glb", targetLength: 5.0, yawOffset: 0 },
+];
+
+for (const v of GLB_VARIANTS) useGLTF.preload(v.url);
 
 type AIState = {
   body: RapierRigidBody | null;
-  way: Float32Array | null; // active polyline (may be a reversed view)
+  way: Float32Array | null;
   segIdx: number;
   t: number;
-  arc: number; // distance along `way` from way[0] to current position
+  arc: number;
 };
 
 type Props = {
   built: BuiltEntry[];
-  // Player position ref so spawn/despawn logic can query without re-rendering.
   playerPosRef: React.RefObject<{ pos: THREE.Vector3 } | null>;
 };
 
-const COLORS = ["#1f6feb", "#2da44e", "#bf8700", "#cf222e", "#8250df", "#0a3069", "#9a6700", "#444c56"];
-
 export function AICars({ built, playerPosRef }: Props) {
-  // Per-tile centerlines accumulated into a flat pool, plus a way-endpoint
-  // graph so cars can follow connected streets across intersections instead
-  // of teleporting back near the player when their current way ends.
   const { ways, lens, endpointMap } = useMemo(() => {
     const out: Float32Array[] = [];
     for (const e of built) for (const w of e.data.carRoadCenterlines) out.push(w);
     const lengths = out.map(wayLength);
 
-    // Map quantized "x,z" key → list of (way, atStart). Two adjacent streets
-    // sharing an OSM node land on the same key.
     const map = new Map<string, Array<{ way: Float32Array; atStart: boolean }>>();
     for (const w of out) {
       if (w.length < 4) continue;
@@ -58,10 +65,6 @@ export function AICars({ built, playerPosRef }: Props) {
   const waysRef = useRef(ways);
   const lensRef = useRef(lens);
   const endpointMapRef = useRef(endpointMap);
-  // Reversed-way cache so following a connected way that joins at its END
-  // is still a forward iteration. Lives across tile loads — `built` ref
-  // identities change but the underlying Float32Array references stay alive
-  // as long as a car holds them.
   const reversedCacheRef = useRef(new WeakMap<Float32Array, Float32Array>());
 
   useEffect(() => {
@@ -84,7 +87,6 @@ export function AICars({ built, playerPosRef }: Props) {
     const player = playerPosRef.current?.pos;
     const px = player?.x ?? 0, pz = player?.z ?? 0;
 
-    // Pre-compute current arc for spacing checks.
     for (const c of cars) {
       if (c.way) c.arc = arcLength(c.way, c.segIdx, c.t);
     }
@@ -94,8 +96,6 @@ export function AICars({ built, playerPosRef }: Props) {
       const tr = c.body.translation();
       const distToPlayer = Math.hypot(tr.x - px, tr.z - pz);
 
-      // Distance recycle is intentionally generous — cars stay alive far
-      // past the visible fog so the player can drive back and find them.
       if (!c.way || distToPlayer > DESPAWN_RADIUS) {
         const slot = findSpawnSlot(ws, lensRef.current, cars, c, px, pz, SPAWN_RADIUS);
         if (!slot) {
@@ -113,7 +113,6 @@ export function AICars({ built, playerPosRef }: Props) {
         continue;
       }
 
-      // Spacing — slow down behind any car ahead on the same way.
       let aheadGap = Infinity;
       for (const o of cars) {
         if (o === c || o.way !== c.way) continue;
@@ -138,8 +137,6 @@ export function AICars({ built, playerPosRef }: Props) {
       }
 
       if (c.t >= 1 && c.segIdx >= N - 2) {
-        // Reached end of way. Try to continue onto a connected way so the
-        // car keeps driving instead of teleporting.
         const lx = w[(N - 1) * 2], lz = w[(N - 1) * 2 + 1];
         const next = pickConnectedWay(endpointMapRef.current, w, lx, lz, reversedCacheRef.current);
         if (next) {
@@ -166,28 +163,58 @@ export function AICars({ built, playerPosRef }: Props) {
   return (
     <>
       {carsRef.current.map((c, i) => (
-        <RigidBody
+        <AICarBody
           key={i}
-          ref={(b: RapierRigidBody | null) => {
-            c.body = b;
-          }}
-          type="kinematicPosition"
-          colliders={false}
-          position={[0, HIDDEN_Y, 0]}
-          ccd
-        >
-          <CuboidCollider args={[0.9, 0.6, 2]} restitution={0.05} friction={0.5} />
-          <mesh castShadow={false}>
-            <boxGeometry args={[1.8, 1.2, 4]} />
-            <meshLambertMaterial color={COLORS[i % COLORS.length]} />
-          </mesh>
-          <mesh position={[0, 0.7, -0.4]}>
-            <boxGeometry args={[1.6, 0.6, 1.8]} />
-            <meshLambertMaterial color="#1a1a1a" />
-          </mesh>
-        </RigidBody>
+          variantIdx={i % GLB_VARIANTS.length}
+          attachBody={(b) => { c.body = b; }}
+        />
       ))}
     </>
+  );
+}
+
+function AICarBody({
+  variantIdx,
+  attachBody,
+}: {
+  variantIdx: number;
+  attachBody: (b: RapierRigidBody | null) => void;
+}) {
+  const variant = GLB_VARIANTS[variantIdx];
+  const gltf = useGLTF(variant.url);
+  // Each car instance owns a clone of the source scene so they can animate
+  // independently. SkeletonUtils.clone preserves any skinned meshes; for
+  // static car models it also handles plain mesh hierarchies.
+  const sceneClone = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
+
+  // Compute scale + offsets once per variant.
+  const { scale, yShift, yawFix } = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(gltf.scene);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    // Pick longest horizontal axis as length; other horizontal as width.
+    const lengthAxis = size.x > size.z ? "x" : "z";
+    const lengthVal = lengthAxis === "x" ? size.x : size.z;
+    const s = variant.targetLength / Math.max(lengthVal, 0.01);
+    // yawFix rotates car so its longest axis aligns with +Z (driving forward).
+    const yaw = lengthAxis === "x" ? Math.PI / 2 : 0;
+    const yShiftVal = -box.min.y * s;
+    return { scale: s, yShift: yShiftVal, yawFix: yaw + variant.yawOffset };
+  }, [gltf.scene, variant]);
+
+  return (
+    <RigidBody
+      ref={attachBody}
+      type="kinematicPosition"
+      colliders={false}
+      position={[0, HIDDEN_Y, 0]}
+      ccd
+    >
+      <CuboidCollider args={[0.9, 0.6, variant.targetLength / 2]} restitution={0.05} friction={0.5} />
+      <group rotation={[0, yawFix, 0]} scale={scale} position={[0, yShift - 0.6, 0]}>
+        <primitive object={sceneClone} />
+      </group>
+    </RigidBody>
   );
 }
 
@@ -202,9 +229,6 @@ function endKey(x: number, z: number): string {
   return `${Math.round(x / ENDPOINT_GRID_M)},${Math.round(z / ENDPOINT_GRID_M)}`;
 }
 
-// At a way's terminal vertex, pick a connected way that leaves from the same
-// endpoint. If a candidate joins at its END, return a reversed copy so the
-// car always drives the new way segIdx 0 → N-1.
 function pickConnectedWay(
   endpointMap: Map<string, Array<{ way: Float32Array; atStart: boolean }>>,
   current: Float32Array,
@@ -214,12 +238,10 @@ function pickConnectedWay(
 ): Float32Array | null {
   const list = endpointMap.get(endKey(lx, lz));
   if (!list || list.length === 0) return null;
-  // Filter out the way we just finished so we don't ping-pong.
   const candidates = list.filter((c) => c.way !== current);
   if (candidates.length === 0) return null;
   const pick = candidates[Math.floor(Math.random() * candidates.length)];
   if (pick.atStart) return pick.way;
-  // Joins at its END — reverse so we still iterate forward.
   let rev = reversedCache.get(pick.way);
   if (!rev) {
     rev = reverseWay(pick.way);
