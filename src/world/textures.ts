@@ -187,12 +187,24 @@ export function highwayTexture(): THREE.CanvasTexture {
     g.fillStyle = `rgba(${v},${v},${v},${0.4 + r() * 0.5})`;
     g.fillRect(r() * W, r() * H, 1, 1);
   }
-  g.fillStyle = "rgba(0,0,0,0.15)";
-  g.fillRect(W * 0.18, 0, 8, H);
-  g.fillRect(W * 0.82 - 8, 0, 8, H);
+  // Long faint vertical scratches — wear from tires.
+  g.strokeStyle = "rgba(0,0,0,0.18)";
+  g.lineWidth = 1;
+  for (let i = 0; i < 80; i++) {
+    const x = r() * W;
+    const y0 = r() * H * 0.6;
+    const y1 = y0 + 30 + r() * 200;
+    g.beginPath(); g.moveTo(x, y0); g.lineTo(x + (r() - 0.5) * 4, y1); g.stroke();
+  }
+  // Tire-wear bands.
+  g.fillStyle = "rgba(0,0,0,0.18)";
+  g.fillRect(W * 0.18, 0, 10, H);
+  g.fillRect(W * 0.82 - 10, 0, 10, H);
+  // Edge stripes.
   g.fillStyle = "#e8e3d2";
   g.fillRect(3, 0, 5, H);
   g.fillRect(W - 8, 0, 5, H);
+  // Yellow dashed centre.
   g.fillStyle = "#e8d96b";
   for (let y = 0; y < H; y += 192) g.fillRect(W / 2 - 4, y, 8, 96);
   roadTex = new THREE.CanvasTexture(c);
@@ -220,6 +232,19 @@ export function standardRoadTexture(): THREE.CanvasTexture {
     g.fillStyle = `rgba(${v},${v},${v},${0.4 + r() * 0.5})`;
     g.fillRect(r() * W, r() * H, 1, 1);
   }
+  g.strokeStyle = "rgba(0,0,0,0.16)";
+  g.lineWidth = 1;
+  for (let i = 0; i < 60; i++) {
+    const x = r() * W;
+    const y0 = r() * H * 0.7;
+    const y1 = y0 + 20 + r() * 180;
+    g.beginPath(); g.moveTo(x, y0); g.lineTo(x + (r() - 0.5) * 3, y1); g.stroke();
+  }
+  // Subtle edge wear.
+  g.fillStyle = "rgba(0,0,0,0.12)";
+  g.fillRect(W * 0.22, 0, 8, H);
+  g.fillRect(W * 0.78 - 8, 0, 8, H);
+  // Dashed white centre.
   g.fillStyle = "#dedbcf";
   for (let y = 0; y < H; y += 160) g.fillRect(W / 2 - 3, y, 6, 80);
   roadStdTex = new THREE.CanvasTexture(c);
@@ -278,24 +303,61 @@ export function bikeTexture(): THREE.CanvasTexture {
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
+  // Asphalt-red base with grain.
   g.fillStyle = "#7a1c1c";
   g.fillRect(0, 0, W, H);
-  // Speckle for asphalt-on-bike-path feel.
   const r = rng(11);
   for (let i = 0; i < 1500; i++) {
     g.fillStyle = `rgba(0,0,0,${r() * 0.18})`;
     g.fillRect(r() * W, r() * H, 1, 1);
   }
+  // Lane edge stripes.
   g.fillStyle = "#ffffff";
   g.fillRect(4, 0, 3, H);
   g.fillRect(W - 7, 0, 3, H);
-  // Bike emblem.
+
+  // Direction chevron — a clean white arrow points "down" the lane (toward
+  // texture +V), much easier to read than the previous wheel circles.
   g.strokeStyle = "#ffffff";
-  g.lineWidth = 3;
+  g.lineWidth = 5;
+  g.lineJoin = "round";
+  g.lineCap = "round";
+  const cx = W / 2;
+  const baseY = H * 0.45;
+  const tipY = H * 0.62;
+  const wing = W * 0.22;
   g.beginPath();
-  g.arc(W / 2 - 14, H / 2 + 24, 12, 0, Math.PI * 2);
-  g.arc(W / 2 + 14, H / 2 + 24, 12, 0, Math.PI * 2);
+  g.moveTo(cx - wing, baseY);
+  g.lineTo(cx, tipY);
+  g.lineTo(cx + wing, baseY);
   g.stroke();
+
+  // Small bike pictogram in the lower half. Two wheels + triangle frame.
+  g.strokeStyle = "#ffffff";
+  g.lineWidth = 2.5;
+  const wy = H * 0.86;
+  const wr = 9;
+  const sep = 22;
+  g.beginPath();
+  g.arc(cx - sep, wy, wr, 0, Math.PI * 2);
+  g.arc(cx + sep, wy, wr, 0, Math.PI * 2);
+  g.stroke();
+  // Frame: rear hub → seat tube top → front hub.
+  g.beginPath();
+  g.moveTo(cx - sep, wy);
+  g.lineTo(cx - 2, wy - 16);
+  g.lineTo(cx + sep, wy);
+  g.stroke();
+  // Down tube + handlebar stem.
+  g.beginPath();
+  g.moveTo(cx - sep, wy);
+  g.lineTo(cx + 6, wy - 18);
+  g.stroke();
+  g.beginPath();
+  g.moveTo(cx + 6, wy - 18);
+  g.lineTo(cx + 12, wy - 22);
+  g.stroke();
+
   bikeTex = new THREE.CanvasTexture(c);
   tuneTexture(bikeTex);
   return bikeTex;

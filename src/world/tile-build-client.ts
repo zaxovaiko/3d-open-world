@@ -21,6 +21,8 @@ export type Built = {
   carRoadCenterlines: Float32Array[];
   // Centerlines for tram/rail — used by AI trams.
   tramCenterlines: Float32Array[];
+  // Roadside guard-rail barrier instances. Flat (x, z, yaw) per barrier.
+  barrierInstances: Float32Array;
 };
 
 let worker: Worker | null = null;
@@ -175,6 +177,7 @@ export function buildTileInWorker(
         peaks: out.peaks,
         carRoadCenterlines: out.carRoadCenterlines,
         tramCenterlines: out.tramCenterlines,
+        barrierInstances: out.barrierInstances,
       };
       touchLRU(cacheKey, built);
       inFlightCache.delete(cacheKey);

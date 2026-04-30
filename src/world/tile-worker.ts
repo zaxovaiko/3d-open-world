@@ -355,17 +355,12 @@ const KIND_DEFAULTS: Record<RoadKind, { width: number; y: number; lengthScale: n
 const CAR_LIKE_KINDS = new Set<RoadKind>(["highway", "road", "street", "service", "bus"]);
 
 function widthFor(kind: RoadKind, w: OsmWay): number {
+  // Width is determined ONLY by OSM highway class, not by per-way `lanes`
+  // or `width` tags. Adjacent OSM ways representing the same street often
+  // disagree on those tags (one segment marked lanes=4, the next no tag),
+  // which produced visible width steps along a single street. Forcing a
+  // class-based constant keeps a logical road consistent end to end.
   const tags = w.tags;
-  if (tags?.width) {
-    const v = parseFloat(tags.width);
-    if (Number.isFinite(v) && v > 0) return v;
-  }
-  // OSM lanes tag: ~3.5 m per lane, total across both directions if `lanes`,
-  // otherwise per-direction with `lanes:forward` + `lanes:backward`.
-  if (CAR_LIKE_KINDS.has(kind) && tags?.lanes) {
-    const lanes = parseFloat(tags.lanes);
-    if (Number.isFinite(lanes) && lanes > 0) return Math.max(lanes * 3.5, 4);
-  }
   if (CAR_LIKE_KINDS.has(kind) && tags?.highway) {
     return HIGHWAY_WIDTHS[tags.highway] ?? KIND_DEFAULTS[kind].width;
   }
@@ -525,6 +520,10 @@ export type WorkerOutput = {
   // AI traffic to follow streets without re-parsing geometry on the main thread.
   carRoadCenterlines: Float32Array[];
   tramCenterlines: Float32Array[];
+  // Roadside guard-rail barrier instances along highway+road edges. Flat
+  // (x, z, yaw) triples — one InstancedMesh on the main thread renders all
+  // of them as small concrete blocks.
+  barrierInstances: Float32Array;
 };
 
 self.onmessage = (e: MessageEvent<WorkerInput>) => {
@@ -583,8 +582,48 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   collectCenterlines(classified.roads.service, carRoadCenterlines);
   collectCenterlines(classified.roads.tram, tramCenterlines);
 
+  // Roadside barriers: every BARRIER_STEP metres along highway+road, place a
+  // concrete block on each side just past the carriageway edge. Skip small
+  // streets / service roads where a guard rail wouldn't read.
+  const BARRIER_STEP = 18;
+  const BARRIER_OFFSET = 0.6;
+  const barrierFloats: number[] = [];
+  const collectBarriers = (ways: OsmWay[], kind: RoadKind) => {
+    const cfg = KIND_DEFAULTS[kind];
+    for (const w of ways) {
+      const halfW = widthFor(kind, w) / 2 + BARRIER_OFFSET;
+      const projected = w.geometry.map((p) => proj.toLocal(p.lat, p.lon));
+      const smoothed = chaikinSmooth(chaikinSmooth(projected));
+      let acc = 0;
+      let nextEmit = BARRIER_STEP / 2;
+      for (let i = 0; i < smoothed.length - 1; i++) {
+        const a = smoothed[i], b = smoothed[i + 1];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const len = Math.hypot(dx, dz);
+        if (len < 0.001) continue;
+        const nx = -dz / len, nz = dx / len;
+        const yaw = Math.atan2(dx, dz);
+        while (acc + len >= nextEmit) {
+          const t = (nextEmit - acc) / len;
+          const cx = a.x + dx * t;
+          const cz = a.z + dz * t;
+          // Left + right.
+          barrierFloats.push(cx + nx * halfW, cz + nz * halfW, yaw);
+          barrierFloats.push(cx - nx * halfW, cz - nz * halfW, yaw);
+          nextEmit += BARRIER_STEP;
+        }
+        acc += len;
+      }
+      // Suppress unused-var lint (cfg reserved for future per-kind tuning).
+      void cfg;
+    }
+  };
+  collectBarriers(classified.roads.highway, "highway");
+  collectBarriers(classified.roads.road, "road");
+  const barrierInstances = new Float32Array(barrierFloats);
+
   const out: WorkerOutput = {
-    reqId, buildings, roads, trees, peaks, carRoadCenterlines, tramCenterlines,
+    reqId, buildings, roads, trees, peaks, carRoadCenterlines, tramCenterlines, barrierInstances,
   };
 
   // Collect transferable buffers — zero-copy transfer to main thread.
@@ -604,6 +643,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   }
   for (const cl of carRoadCenterlines) transfers.push(cl.buffer as ArrayBuffer);
   for (const cl of tramCenterlines) transfers.push(cl.buffer as ArrayBuffer);
+  transfers.push(barrierInstances.buffer as ArrayBuffer);
 
   (self as unknown as Worker).postMessage(out, transfers);
 };
