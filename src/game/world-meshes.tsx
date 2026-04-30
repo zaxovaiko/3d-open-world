@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { RoadKind } from "../types";
 import { BUILDING_KINDS, type BuildingKind } from "../world/buildings-shared";
@@ -26,6 +27,22 @@ export const BUILDING_MAT: Record<BuildingKind, THREE.Material> = {
   generic: new THREE.MeshLambertMaterial({ map: buildingKindTexture("generic") }),
 };
 
+// River-only material — keep a typed handle so the animator can scroll the UV.
+const RIVER_TEX = waterTexture();
+const RIVER_MAT = new THREE.MeshBasicMaterial({ map: RIVER_TEX });
+
+// Drives subtle UV scrolling on the river texture so water reads as flowing
+// rather than painted on. Mount once in the scene; uses no extra draws.
+export function WaterAnimator() {
+  useFrame((_, dt) => {
+    if (!RIVER_TEX) return;
+    RIVER_TEX.offset.y -= dt * 0.04;
+    RIVER_TEX.offset.x += dt * 0.012;
+    RIVER_TEX.needsUpdate = true;
+  });
+  return null;
+}
+
 export const ROAD_MAT: Record<RoadKind, THREE.Material> = {
   highway: new THREE.MeshBasicMaterial({ map: highwayTexture() }),
   road: new THREE.MeshBasicMaterial({ map: standardRoadTexture() }),
@@ -35,7 +52,7 @@ export const ROAD_MAT: Record<RoadKind, THREE.Material> = {
   bus: new THREE.MeshBasicMaterial({ map: busTexture() }),
   tram: new THREE.MeshBasicMaterial({ map: tramTexture() }),
   footway: new THREE.MeshBasicMaterial({ map: footwayTexture() }),
-  river: new THREE.MeshBasicMaterial({ map: waterTexture() }),
+  river: RIVER_MAT,
 };
 
 const ROAD_ORDER: RoadKind[] = [

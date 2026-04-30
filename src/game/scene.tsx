@@ -8,14 +8,13 @@ import { makeProjector } from "../world/project";
 import { useTileStreamer } from "../world/tile-streamer";
 import type { Built } from "../world/tile-build-client";
 import { Tile, Ground } from "./tile";
-import { WorldMeshes, type BuiltEntry } from "./world-meshes";
+import { WorldMeshes, WaterAnimator, type BuiltEntry } from "./world-meshes";
 import { Prewarm } from "./prewarm";
 import { Car } from "./car";
 import { FollowCamera } from "./follow-camera";
 import { AICars } from "./ai-cars";
 import { AITrams } from "./ai-trams";
 import { Grass } from "./grass";
-import { Barriers } from "./barriers";
 import { Hud } from "../ui/hud";
 
 type Props = { origin: LatLon };
@@ -104,6 +103,7 @@ export function Scene({ origin }: Props) {
           <Prewarm />
           <Physics gravity={[0, -9.81, 0]} timeStep={1 / 60} interpolate paused={paused}>
             <Ground />
+            <WaterAnimator />
             <World
               proj={proj}
               carPos={carPos}
@@ -178,7 +178,6 @@ function World({
         <Tile key={t.key} tile={t} proj={proj} onBuilt={onBuilt} onUnmount={onUnmount} />
       ))}
       <WorldMeshes built={builtList} />
-      <Barriers built={builtList} />
       <AICars built={builtList} playerPosRef={poseRef} />
       <AITrams built={builtList} playerPosRef={poseRef} />
       <Grass built={builtList} playerPosRef={poseRef} />

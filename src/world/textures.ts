@@ -455,27 +455,45 @@ export function footwayTexture(): THREE.CanvasTexture {
 
 export function waterTexture(): THREE.CanvasTexture {
   if (waterTex) return waterTex;
-  const W = 256, H = 256;
+  const W = 512, H = 512;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
+  // Multi-stop deep-water gradient.
   const grad = g.createLinearGradient(0, 0, W, H);
-  grad.addColorStop(0, "#1a4a78");
-  grad.addColorStop(0.5, "#2a6098");
-  grad.addColorStop(1, "#1a4a78");
+  grad.addColorStop(0, "#0e3962");
+  grad.addColorStop(0.3, "#1a5b94");
+  grad.addColorStop(0.55, "#2674b1");
+  grad.addColorStop(0.8, "#1a5b94");
+  grad.addColorStop(1, "#0e3962");
   g.fillStyle = grad;
   g.fillRect(0, 0, W, H);
-  g.strokeStyle = "rgba(255,255,255,0.16)";
-  g.lineWidth = 2;
-  for (let i = 0; i < 36; i++) {
-    g.beginPath();
-    const y = (i * H) / 36 + (i % 2) * 4;
-    g.moveTo(0, y);
-    for (let x = 0; x <= W; x += 8) {
-      g.lineTo(x, y + Math.sin(x * 0.12 + i) * 3);
+  // Layered sinusoid wave crests at three frequencies for organic-looking
+  // ripples without a heavy shader.
+  const waveBands: Array<{ freq: number; amp: number; rows: number; alpha: number; phase: number }> = [
+    { freq: 0.06, amp: 5, rows: 22, alpha: 0.18, phase: 0 },
+    { freq: 0.14, amp: 3, rows: 30, alpha: 0.10, phase: 1.7 },
+    { freq: 0.27, amp: 2, rows: 38, alpha: 0.07, phase: 3.4 },
+  ];
+  for (const band of waveBands) {
+    g.strokeStyle = `rgba(255,255,255,${band.alpha})`;
+    g.lineWidth = 1.5;
+    for (let i = 0; i < band.rows; i++) {
+      g.beginPath();
+      const y = (i * H) / band.rows + (i % 2) * 4;
+      g.moveTo(0, y);
+      for (let x = 0; x <= W; x += 6) {
+        g.lineTo(x, y + Math.sin(x * band.freq + i + band.phase) * band.amp);
+      }
+      g.stroke();
     }
-    g.stroke();
+  }
+  // Fine speckle for sun glints.
+  const r = rng(31);
+  for (let i = 0; i < 1200; i++) {
+    g.fillStyle = `rgba(255,255,255,${0.05 + r() * 0.08})`;
+    g.fillRect(r() * W, r() * H, 1, 1);
   }
   waterTex = new THREE.CanvasTexture(c);
   tuneTexture(waterTex);
