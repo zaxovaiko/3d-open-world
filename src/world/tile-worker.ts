@@ -50,7 +50,126 @@ type BuildingRaw = {
   aabbs: BuildingAABB[];
 };
 
-function buildBuildingsRaw(ways: OsmWay[], proj: Projector): BuildingRaw | null {
+type PreparedBuilding = {
+  kind: BuildingKind;
+  ring: Pt[];
+  h: number;
+  tris: number[][];
+  aabb: BuildingAABB;
+  bb: { minX: number; maxX: number; minZ: number; maxZ: number };
+};
+
+function pointInRing(px: number, pz: number, ring: Pt[]): boolean {
+  let inside = false;
+  const N = ring.length;
+  for (let i = 0, j = N - 1; i < N; j = i++) {
+    const xi = ring[i].x, zi = ring[i].z;
+    const xj = ring[j].x, zj = ring[j].z;
+    const intersect =
+      zi > pz !== zj > pz && px < ((xj - xi) * (pz - zi)) / (zj - zi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): PreparedBuilding | null {
+  const pts = w.geometry;
+  if (pts.length < 4) return null;
+  const closed =
+    pts[0].lat === pts[pts.length - 1].lat && pts[0].lon === pts[pts.length - 1].lon;
+  const raw = closed ? pts.slice(0, -1) : pts;
+  if (raw.length < 3) return null;
+
+  let ring: Pt[] = raw.map((p) => proj.toLocal(p.lat, p.lon));
+  const area = signedArea(ring);
+  if (Math.abs(area) < 1) return null;
+  if (area < 0) ring = ring.slice().reverse();
+
+  const h = parseHeight(w.tags);
+
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const p of ring) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.z < minZ) minZ = p.z;
+    if (p.z > maxZ) maxZ = p.z;
+  }
+
+  const verts2d = ring.map((p) => new THREE.Vector2(p.x, p.z));
+  const tris = THREE.ShapeUtils.triangulateShape(verts2d, []);
+  if (!tris.length) return null;
+
+  return {
+    kind,
+    ring,
+    h,
+    tris,
+    bb: { minX, maxX, minZ, maxZ },
+    aabb: {
+      cx: (minX + maxX) / 2,
+      cy: h / 2,
+      cz: (minZ + maxZ) / 2,
+      hx: (maxX - minX) / 2,
+      hy: h / 2,
+      hz: (maxZ - minZ) / 2,
+    },
+  };
+}
+
+// 1cm quantization → exact-shared edges hash to same key regardless of
+// vertex order.
+function edgeKey(ax: number, az: number, bx: number, bz: number): string {
+  const q = 100;
+  const a0 = Math.round(ax * q), a1 = Math.round(az * q);
+  const b0 = Math.round(bx * q), b1 = Math.round(bz * q);
+  if (a0 < b0 || (a0 === b0 && a1 < b1)) return `${a0},${a1}|${b0},${b1}`;
+  return `${b0},${b1}|${a0},${a1}`;
+}
+
+type Occlusion = {
+  // Per-building list of neighbor indices whose AABB overlaps and whose height
+  // matters for occlusion. Empty list → all walls exterior, skip per-edge test.
+  neighbors: number[][];
+  // Edges shared with another building (exact endpoints). Both sides hidden.
+  sharedEdges: Set<string>;
+};
+
+function computeOcclusion(prepared: PreparedBuilding[]): Occlusion {
+  const N = prepared.length;
+  const neighbors: number[][] = Array.from({ length: N }, () => []);
+  const edgeCount = new Map<string, number>();
+
+  for (let i = 0; i < N; i++) {
+    const a = prepared[i];
+    const ar = a.ring;
+    for (let k = 0; k < ar.length; k++) {
+      const p = ar[k];
+      const q = ar[(k + 1) % ar.length];
+      const key = edgeKey(p.x, p.z, q.x, q.z);
+      edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1);
+    }
+    for (let j = i + 1; j < N; j++) {
+      const b = prepared[j];
+      const ab = a.bb, bb = b.bb;
+      if (ab.maxX < bb.minX || ab.minX > bb.maxX) continue;
+      if (ab.maxZ < bb.minZ || ab.minZ > bb.maxZ) continue;
+      // Symmetric height filter — only register if either could occlude the other.
+      if (b.h >= a.h * 0.5) neighbors[i].push(j);
+      if (a.h >= b.h * 0.5) neighbors[j].push(i);
+    }
+  }
+
+  const sharedEdges = new Set<string>();
+  for (const [k, c] of edgeCount) if (c > 1) sharedEdges.add(k);
+  return { neighbors, sharedEdges };
+}
+
+// Build per-kind raw geometry. Walls hidden by neighbor polygons skipped.
+function buildBuildingsRawFromPrepared(
+  prepared: PreparedBuilding[],
+  occ: Occlusion,
+  kind: BuildingKind,
+): BuildingRaw | null {
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
@@ -58,51 +177,26 @@ function buildBuildingsRaw(ways: OsmWay[], proj: Projector): BuildingRaw | null 
   let baseV = 0;
   let count = 0;
 
-  for (const w of ways) {
-    const pts = w.geometry;
-    if (pts.length < 4) continue;
-    const closed =
-      pts[0].lat === pts[pts.length - 1].lat && pts[0].lon === pts[pts.length - 1].lon;
-    const raw = closed ? pts.slice(0, -1) : pts;
-    if (raw.length < 3) continue;
-
-    let ring: Pt[] = raw.map((p) => proj.toLocal(p.lat, p.lon));
-    const area = signedArea(ring);
-    if (Math.abs(area) < 1) continue;
-    if (area < 0) ring = ring.slice().reverse();
-
-    const h = parseHeight(w.tags);
+  for (let bi = 0; bi < prepared.length; bi++) {
+    const b = prepared[bi];
+    if (b.kind !== kind) continue;
+    const { ring, h, tris, aabb } = b;
     const N = ring.length;
+    aabbs.push(aabb);
 
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (const p of ring) {
-      if (p.x < minX) minX = p.x;
-      if (p.x > maxX) maxX = p.x;
-      if (p.z < minZ) minZ = p.z;
-      if (p.z > maxZ) maxZ = p.z;
-    }
-    aabbs.push({
-      cx: (minX + maxX) / 2,
-      cy: h / 2,
-      cz: (minZ + maxZ) / 2,
-      hx: (maxX - minX) / 2,
-      hy: h / 2,
-      hz: (maxZ - minZ) / 2,
-    });
-
-    const verts2d = ring.map((p) => new THREE.Vector2(p.x, p.z));
-    const tris = THREE.ShapeUtils.triangulateShape(verts2d, []);
-    if (!tris.length) continue;
-
+    // Roof.
     for (let i = 0; i < N; i++) {
       positions.push(ring[i].x, h, ring[i].z);
       uvs.push(ring[i].x / WINDOW_W_M, ring[i].z / WINDOW_W_M);
     }
     for (const [a, b, c] of tris) {
-      indices.push(baseV + a, baseV + c, baseV + b);
+      // CCW shape (x,z) → +y normal for roof when read as (a,b,c).
+      indices.push(baseV + a, baseV + b, baseV + c);
     }
     baseV += N;
 
+    const nbrs = occ.neighbors[bi];
+    const noNeighbors = nbrs.length === 0;
     let perim = 0;
     for (let i = 0; i < N; i++) {
       const j = (i + 1) % N;
@@ -112,13 +206,43 @@ function buildBuildingsRaw(ways: OsmWay[], proj: Projector): BuildingRaw | null 
       const u0 = perim / WINDOW_W_M;
       const u1 = (perim + len) / WINDOW_W_M;
       const v1 = h / WINDOW_H_M;
+      perim += len;
+
+      let occluded = false;
+
+      // Cheap hash: exact-shared edge with any neighbor → both sides hidden.
+      if (!noNeighbors && occ.sharedEdges.has(edgeKey(ax, az, bx, bz))) {
+        occluded = true;
+      } else if (!noNeighbors) {
+        // Sample slightly OUTWARD; if inside a neighbor polygon, this wall is
+        // an internal partition.
+        const mx = (ax + bx) / 2;
+        const mz = (az + bz) / 2;
+        const dx = bx - ax, dz = bz - az;
+        const nl = Math.hypot(dx, dz) || 1;
+        const ox = dz / nl, oz = -dx / nl;
+        const eps = 0.05;
+        const tx = mx + ox * eps;
+        const tz = mz + oz * eps;
+        for (const k of nbrs) {
+          const other = prepared[k];
+          const obb = other.bb;
+          if (tx < obb.minX || tx > obb.maxX || tz < obb.minZ || tz > obb.maxZ) continue;
+          if (pointInRing(tx, tz, other.ring)) {
+            occluded = true;
+            break;
+          }
+        }
+      }
+      if (occluded) continue;
+
       positions.push(ax, 0, az); uvs.push(u0, 0);
       positions.push(bx, 0, bz); uvs.push(u1, 0);
       positions.push(bx, h, bz); uvs.push(u1, v1);
       positions.push(ax, h, az); uvs.push(u0, v1);
-      indices.push(baseV, baseV + 1, baseV + 2, baseV, baseV + 2, baseV + 3);
+      // Outward winding: faces away from polygon interior (CCW ring).
+      indices.push(baseV, baseV + 2, baseV + 1, baseV, baseV + 3, baseV + 2);
       baseV += 4;
-      perim += len;
     }
     count++;
   }
@@ -196,8 +320,9 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
       positions.push(a.x - ox, cfg.y, a.z - oz); uvs.push(1, v0);
       positions.push(b.x + ox, cfg.y, b.z + oz); uvs.push(0, v1);
       positions.push(b.x - ox, cfg.y, b.z - oz); uvs.push(1, v1);
-      indices.push(vIndex, vIndex + 1, vIndex + 2);
-      indices.push(vIndex + 1, vIndex + 3, vIndex + 2);
+      // Faces +y (up).
+      indices.push(vIndex, vIndex + 2, vIndex + 1);
+      indices.push(vIndex + 1, vIndex + 2, vIndex + 3);
       vIndex += 4;
       traveled += len;
     }
@@ -234,17 +359,17 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   const { reqId, tile, originLat, originLon } = e.data;
   const proj = makeProjector({ lat: originLat, lon: originLon });
 
-  const buckets: Record<BuildingKind, OsmWay[]> = {
-    residential: [],
-    commercial: [],
-    industrial: [],
-    civic: [],
-    generic: [],
-  };
-  for (const w of tile.buildings) buckets[_classifyBuilding(w.tags)].push(w);
+  // Prepare every building once so wall-occlusion can test across kinds.
+  const prepared: PreparedBuilding[] = [];
+  for (const w of tile.buildings) {
+    const kind = _classifyBuilding(w.tags);
+    const p = prepareBuilding(w, kind, proj);
+    if (p) prepared.push(p);
+  }
+  const occ = computeOcclusion(prepared);
   const buildings: Partial<Record<BuildingKind, BuildingRaw>> = {};
   for (const k of BUILDING_KINDS) {
-    const r = buildBuildingsRaw(buckets[k], proj);
+    const r = buildBuildingsRawFromPrepared(prepared, occ, k);
     if (r) buildings[k] = r;
   }
 

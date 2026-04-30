@@ -136,7 +136,6 @@ export function buildTileInWorker(
     cancel: () => {
       // Mark cancelled but allow worker result to populate cache so next mount is instant.
       cancelled = true;
-      pending.delete(reqId);
     },
   };
 }
