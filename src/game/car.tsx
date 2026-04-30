@@ -37,7 +37,8 @@ function CarModel() {
     });
     return c;
   }, [scene]);
-  // Ferrari model is ~4.5m long, faces +X by default in three.js examples — rotate so it faces +Z (forward axis).
+  // Ferrari model faces -Z by default. Math.PI around Y flips it to +Z so
+  // the model's nose aligns with the chassis forward axis.
   return <primitive object={obj} rotation={[0, Math.PI, 0]} position={[0, -0.4, 0]} />;
 }
 
@@ -132,7 +133,10 @@ export function Car({ spawn = [0, 4, 0], onPose }: Props) {
     if (!bodyRef.current) return;
     const c = world.createVehicleController(bodyRef.current);
     c.indexUpAxis = 1;
-    c.setIndexForwardAxis = 2;
+    // Rapier defaults to Z forward (index 2). The previous code wrote
+    // `c.setIndexForwardAxis = 2` which clobbered a setter method with a
+    // number — kept silently and the default axis was used anyway. Leave
+    // it implicit; the assignment is a no-op even when typed correctly.
     const suspensionDir = { x: 0, y: -1, z: 0 };
     const axle = { x: -1, y: 0, z: 0 };
     for (const [x, y, z] of wheelOffsets) {

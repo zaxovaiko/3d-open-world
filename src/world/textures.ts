@@ -170,44 +170,105 @@ export function buildingKindTexture(kind: string): THREE.CanvasTexture {
   return tex;
 }
 
-export function roadTexture(): THREE.CanvasTexture {
+// Highway: motorway/trunk/primary. Dark asphalt, white edge stripes,
+// solid white centre line + dashed yellow lane divider.
+export function highwayTexture(): THREE.CanvasTexture {
   if (roadTex) return roadTex;
   const W = 256, H = 1024;
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const g = c.getContext("2d")!;
-
-  // Asphalt base with subtle vertical streaking.
-  g.fillStyle = "#2b2b2b";
+  g.fillStyle = "#262626";
   g.fillRect(0, 0, W, H);
   const r = rng(7);
   for (let i = 0; i < 8000; i++) {
-    const v = 22 + r() * 50;
+    const v = 18 + r() * 50;
     g.fillStyle = `rgba(${v},${v},${v},${0.4 + r() * 0.5})`;
     g.fillRect(r() * W, r() * H, 1, 1);
   }
-  // Wider tire-wear lanes (slightly darker tracks).
   g.fillStyle = "rgba(0,0,0,0.15)";
   g.fillRect(W * 0.18, 0, 8, H);
   g.fillRect(W * 0.82 - 8, 0, 8, H);
-
-  // White edge stripes.
-  g.fillStyle = "#dedbcf";
-  g.fillRect(2, 0, 4, H);
-  g.fillRect(W - 6, 0, 4, H);
-
-  // Center dashed line.
+  g.fillStyle = "#e8e3d2";
+  g.fillRect(3, 0, 5, H);
+  g.fillRect(W - 8, 0, 5, H);
   g.fillStyle = "#e8d96b";
-  const dashLen = 96;
-  const gap = 96;
-  for (let y = 0; y < H; y += dashLen + gap) {
-    g.fillRect(W / 2 - 4, y, 8, dashLen);
-  }
-
+  for (let y = 0; y < H; y += 192) g.fillRect(W / 2 - 4, y, 8, 96);
   roadTex = new THREE.CanvasTexture(c);
   tuneTexture(roadTex);
   return roadTex;
+}
+
+// Backwards-compat alias for callers still importing roadTexture.
+export const roadTexture = highwayTexture;
+
+let roadStdTex: THREE.CanvasTexture | null = null;
+// Standard road: secondary/tertiary. Mid-grey asphalt, dashed white centre.
+export function standardRoadTexture(): THREE.CanvasTexture {
+  if (roadStdTex) return roadStdTex;
+  const W = 256, H = 1024;
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#3a3a3a";
+  g.fillRect(0, 0, W, H);
+  const r = rng(8);
+  for (let i = 0; i < 8000; i++) {
+    const v = 32 + r() * 50;
+    g.fillStyle = `rgba(${v},${v},${v},${0.4 + r() * 0.5})`;
+    g.fillRect(r() * W, r() * H, 1, 1);
+  }
+  g.fillStyle = "#dedbcf";
+  for (let y = 0; y < H; y += 160) g.fillRect(W / 2 - 3, y, 6, 80);
+  roadStdTex = new THREE.CanvasTexture(c);
+  tuneTexture(roadStdTex);
+  return roadStdTex;
+}
+
+let streetTex: THREE.CanvasTexture | null = null;
+// Street: residential / unclassified. Lighter, no centre marking.
+export function streetTexture(): THREE.CanvasTexture {
+  if (streetTex) return streetTex;
+  const W = 256, H = 512;
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#4a4a48";
+  g.fillRect(0, 0, W, H);
+  const r = rng(9);
+  for (let i = 0; i < 5000; i++) {
+    const v = 50 + r() * 40;
+    g.fillStyle = `rgba(${v},${v},${v - 4},${0.3 + r() * 0.4})`;
+    g.fillRect(r() * W, r() * H, 1, 1);
+  }
+  streetTex = new THREE.CanvasTexture(c);
+  tuneTexture(streetTex);
+  return streetTex;
+}
+
+let serviceTex: THREE.CanvasTexture | null = null;
+// Service / track: gravel-ish beige.
+export function serviceTexture(): THREE.CanvasTexture {
+  if (serviceTex) return serviceTex;
+  const W = 256, H = 256;
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#8c8273";
+  g.fillRect(0, 0, W, H);
+  const r = rng(10);
+  for (let i = 0; i < 6000; i++) {
+    const v = 110 + r() * 60;
+    g.fillStyle = `rgba(${v},${v - 8},${v - 24},${0.3 + r() * 0.4})`;
+    g.fillRect(r() * W, r() * H, 1, 1);
+  }
+  serviceTex = new THREE.CanvasTexture(c);
+  tuneTexture(serviceTex);
+  return serviceTex;
 }
 
 export function bikeTexture(): THREE.CanvasTexture {

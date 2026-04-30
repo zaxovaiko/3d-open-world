@@ -10,7 +10,10 @@ import {
   buildingKindTexture,
   busTexture,
   footwayTexture,
-  roadTexture,
+  highwayTexture,
+  serviceTexture,
+  standardRoadTexture,
+  streetTexture,
   tramTexture,
   waterTexture,
 } from "../world/textures";
@@ -24,7 +27,10 @@ export const BUILDING_MAT: Record<BuildingKind, THREE.Material> = {
 };
 
 export const ROAD_MAT: Record<RoadKind, THREE.Material> = {
-  car: new THREE.MeshBasicMaterial({ map: roadTexture() }),
+  highway: new THREE.MeshBasicMaterial({ map: highwayTexture() }),
+  road: new THREE.MeshBasicMaterial({ map: standardRoadTexture() }),
+  street: new THREE.MeshBasicMaterial({ map: streetTexture() }),
+  service: new THREE.MeshBasicMaterial({ map: serviceTexture() }),
   bike: new THREE.MeshBasicMaterial({ map: bikeTexture() }),
   bus: new THREE.MeshBasicMaterial({ map: busTexture() }),
   tram: new THREE.MeshBasicMaterial({ map: tramTexture() }),
@@ -32,9 +38,11 @@ export const ROAD_MAT: Record<RoadKind, THREE.Material> = {
   river: new THREE.MeshBasicMaterial({ map: waterTexture() }),
 };
 
-const ROAD_ORDER: RoadKind[] = ["river", "tram", "footway", "bike", "bus", "car"];
+const ROAD_ORDER: RoadKind[] = [
+  "river", "tram", "footway", "bike", "service", "street", "bus", "road", "highway",
+];
 const ROAD_RENDER: Record<RoadKind, number> = {
-  river: 0, tram: 1, footway: 2, bike: 3, bus: 4, car: 5,
+  river: 0, tram: 1, footway: 2, bike: 3, service: 4, street: 5, bus: 6, road: 7, highway: 8,
 };
 
 export type BuiltEntry = { key: string; data: Built };

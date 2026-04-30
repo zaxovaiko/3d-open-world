@@ -19,6 +19,8 @@ export type Built = {
   peaks: PeakInstance[];
   // Centerlines for car roads — used by AI traffic.
   carRoadCenterlines: Float32Array[];
+  // Centerlines for tram/rail — used by AI trams.
+  tramCenterlines: Float32Array[];
 };
 
 let worker: Worker | null = null;
@@ -172,6 +174,7 @@ export function buildTileInWorker(
         trees: out.trees,
         peaks: out.peaks,
         carRoadCenterlines: out.carRoadCenterlines,
+        tramCenterlines: out.tramCenterlines,
       };
       touchLRU(cacheKey, built);
       inFlightCache.delete(cacheKey);

@@ -77,7 +77,8 @@ type ClassifiedTile = {
 function classifyElements(data: OverpassResponse): ClassifiedTile {
   const buildings: OsmWay[] = [];
   const roads: Record<RoadKind, OsmWay[]> = {
-    car: [], bike: [], bus: [], tram: [], footway: [], river: [],
+    highway: [], road: [], street: [], service: [],
+    bike: [], bus: [], tram: [], footway: [], river: [],
   };
   const trees: OsmNode[] = [];
   const peaks: OsmNode[] = [];
@@ -89,15 +90,32 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
         buildings.push(el);
       } else if (t.waterway) {
         roads.river.push(el);
-      } else if (t.railway === "tram") {
+      } else if (t.railway === "tram" || t.railway === "rail" || t.railway === "light_rail") {
         roads.tram.push(el);
       } else if (t.highway) {
         const h = t.highway;
         if (h === "cycleway") roads.bike.push(el);
         else if (h === "busway" || t.busway) roads.bus.push(el);
-        else if (h === "footway" || h === "path" || h === "pedestrian" || h === "steps")
+        else if (
+          h === "footway" || h === "path" || h === "pedestrian" || h === "steps" ||
+          h === "corridor" || h === "track"
+        )
           roads.footway.push(el);
-        else roads.car.push(el);
+        else if (
+          h === "motorway" || h === "trunk" || h === "primary" ||
+          h === "motorway_link" || h === "trunk_link" || h === "primary_link"
+        )
+          roads.highway.push(el);
+        else if (
+          h === "secondary" || h === "tertiary" ||
+          h === "secondary_link" || h === "tertiary_link"
+        )
+          roads.road.push(el);
+        else if (h === "service")
+          roads.service.push(el);
+        else
+          // residential, unclassified, living_street, road, etc.
+          roads.street.push(el);
       }
     } else if (el.type === "node") {
       if (el.tags?.natural === "tree") trees.push(el);
@@ -310,27 +328,46 @@ function buildBuildingsRawFromPrepared(
 
 // --- Road build (typed arrays) ---
 
+// Per-OSM-highway widths in metres. ~3.5 m per car lane plus shoulder.
+// Values lean on https://wiki.openstreetmap.org/wiki/Key:highway typical
+// real-world widths.
 const HIGHWAY_WIDTHS: Record<string, number> = {
-  motorway: 10, trunk: 9, primary: 8, secondary: 7, tertiary: 6,
-  residential: 5, unclassified: 5, service: 4, living_street: 4,
-  pedestrian: 3, footway: 2, path: 2, cycleway: 2.5, track: 3,
+  motorway: 14, motorway_link: 7,
+  trunk: 11, trunk_link: 6,
+  primary: 9, primary_link: 5,
+  secondary: 8, secondary_link: 5,
+  tertiary: 7, tertiary_link: 4.5,
+  residential: 6, unclassified: 6, living_street: 5, road: 6,
+  service: 4, track: 3.5,
+  pedestrian: 3, footway: 2, path: 1.5, cycleway: 2.5, steps: 1.5, corridor: 1.5,
 };
 const KIND_DEFAULTS: Record<RoadKind, { width: number; y: number; lengthScale: number }> = {
-  car: { width: 5, y: 0.15, lengthScale: 8 },
-  bike: { width: 2.2, y: 0.18, lengthScale: 4 },
-  bus: { width: 6, y: 0.16, lengthScale: 8 },
-  tram: { width: 3, y: 0.05, lengthScale: 2 },
-  footway: { width: 2, y: 0.12, lengthScale: 3 },
-  river: { width: 8, y: 0.04, lengthScale: 16 },
+  highway: { width: 14, y: 0.16, lengthScale: 8 },
+  road:    { width: 9,  y: 0.15, lengthScale: 8 },
+  street:  { width: 6,  y: 0.14, lengthScale: 8 },
+  service: { width: 4,  y: 0.13, lengthScale: 6 },
+  bike:    { width: 2.2, y: 0.18, lengthScale: 4 },
+  bus:     { width: 6,  y: 0.17, lengthScale: 8 },
+  tram:    { width: 3,  y: 0.05, lengthScale: 2 },
+  footway: { width: 2,  y: 0.12, lengthScale: 3 },
+  river:   { width: 8,  y: 0.04, lengthScale: 16 },
 };
+const CAR_LIKE_KINDS = new Set<RoadKind>(["highway", "road", "street", "service", "bus"]);
+
 function widthFor(kind: RoadKind, w: OsmWay): number {
   const tags = w.tags;
   if (tags?.width) {
     const v = parseFloat(tags.width);
     if (Number.isFinite(v) && v > 0) return v;
   }
-  if (kind === "car" && tags?.highway) {
-    return HIGHWAY_WIDTHS[tags.highway] ?? KIND_DEFAULTS.car.width;
+  // OSM lanes tag: ~3.5 m per lane, total across both directions if `lanes`,
+  // otherwise per-direction with `lanes:forward` + `lanes:backward`.
+  if (CAR_LIKE_KINDS.has(kind) && tags?.lanes) {
+    const lanes = parseFloat(tags.lanes);
+    if (Number.isFinite(lanes) && lanes > 0) return Math.max(lanes * 3.5, 4);
+  }
+  if (CAR_LIKE_KINDS.has(kind) && tags?.highway) {
+    return HIGHWAY_WIDTHS[tags.highway] ?? KIND_DEFAULTS[kind].width;
   }
   return KIND_DEFAULTS[kind].width;
 }
@@ -465,7 +502,9 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
 
 // --- Worker entry ---
 
-const ROAD_KINDS: RoadKind[] = ["river", "tram", "footway", "bike", "bus", "car"];
+const ROAD_KINDS: RoadKind[] = [
+  "river", "tram", "footway", "bike", "bus", "service", "street", "road", "highway",
+];
 
 export type WorkerInput = {
   reqId: number;
@@ -485,6 +524,7 @@ export type WorkerOutput = {
   // Centerlines for `car` roads only — flat (x, z) pairs per way. Used by
   // AI traffic to follow streets without re-parsing geometry on the main thread.
   carRoadCenterlines: Float32Array[];
+  tramCenterlines: Float32Array[];
 };
 
 self.onmessage = (e: MessageEvent<WorkerInput>) => {
@@ -519,22 +559,33 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
 
   // Car-road centerlines for AI driving. Smoothed with the same Chaikin pass
   // applied to road geometry so AI traffic follows the curves the player sees
-  // instead of cutting corners on the original OSM polyline.
+  // instead of cutting corners on the original OSM polyline. All car-driveable
+  // sub-classes feed the same AI pool.
   const carRoadCenterlines: Float32Array[] = [];
-  for (const w of classified.roads.car) {
-    const pts = w.geometry;
-    if (pts.length < 2) continue;
-    const projected = pts.map((p) => proj.toLocal(p.lat, p.lon));
-    const smoothed = chaikinSmooth(chaikinSmooth(projected));
-    const arr = new Float32Array(smoothed.length * 2);
-    for (let i = 0; i < smoothed.length; i++) {
-      arr[i * 2] = smoothed[i].x;
-      arr[i * 2 + 1] = smoothed[i].z;
+  const tramCenterlines: Float32Array[] = [];
+  const collectCenterlines = (ways: OsmWay[], out: Float32Array[]) => {
+    for (const w of ways) {
+      const pts = w.geometry;
+      if (pts.length < 2) continue;
+      const projected = pts.map((p) => proj.toLocal(p.lat, p.lon));
+      const smoothed = chaikinSmooth(chaikinSmooth(projected));
+      const arr = new Float32Array(smoothed.length * 2);
+      for (let i = 0; i < smoothed.length; i++) {
+        arr[i * 2] = smoothed[i].x;
+        arr[i * 2 + 1] = smoothed[i].z;
+      }
+      out.push(arr);
     }
-    carRoadCenterlines.push(arr);
-  }
+  };
+  collectCenterlines(classified.roads.highway, carRoadCenterlines);
+  collectCenterlines(classified.roads.road, carRoadCenterlines);
+  collectCenterlines(classified.roads.street, carRoadCenterlines);
+  collectCenterlines(classified.roads.service, carRoadCenterlines);
+  collectCenterlines(classified.roads.tram, tramCenterlines);
 
-  const out: WorkerOutput = { reqId, buildings, roads, trees, peaks, carRoadCenterlines };
+  const out: WorkerOutput = {
+    reqId, buildings, roads, trees, peaks, carRoadCenterlines, tramCenterlines,
+  };
 
   // Collect transferable buffers — zero-copy transfer to main thread.
   const transfers: Transferable[] = [];
@@ -552,6 +603,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     transfers.push(r.positions.buffer as ArrayBuffer, r.uvs.buffer as ArrayBuffer, r.indices.buffer as ArrayBuffer);
   }
   for (const cl of carRoadCenterlines) transfers.push(cl.buffer as ArrayBuffer);
+  for (const cl of tramCenterlines) transfers.push(cl.buffer as ArrayBuffer);
 
   (self as unknown as Worker).postMessage(out, transfers);
 };

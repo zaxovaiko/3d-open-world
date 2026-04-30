@@ -27,7 +27,14 @@ export type OverpassResponse = {
 
 export type TileKey = string; // `${tx}_${tz}`
 
-export type RoadKind = "car" | "bike" | "bus" | "tram" | "footway" | "river";
+// Road sub-classes per OSM highway tag:
+// highway → motorway, trunk, primary (and *_link)
+// road    → secondary, tertiary (and *_link)
+// street  → residential, unclassified, living_street
+// service → service, track
+export type RoadKind =
+  | "highway" | "road" | "street" | "service"
+  | "bike" | "bus" | "tram" | "footway" | "river";
 
 // Network-side tile shape: raw Overpass response + tile coords. Element
 // classification (buildings/roads/trees/peaks) happens inside the worker so
