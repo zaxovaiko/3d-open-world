@@ -340,6 +340,10 @@ type RoadRaw = {
   bsphere: BSphere;
 };
 
+// Miter limit: clamp miter spike length so very sharp angles don't shoot
+// far past the joint. 4 = up to 4× halfW. Beyond that we cap.
+const MITER_LIMIT = 4;
+
 function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw | null {
   const positions: number[] = [];
   const uvs: number[] = [];
@@ -352,24 +356,64 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
     if (pts.length < 2) continue;
     const halfW = widthFor(kind, w) / 2;
     const local = pts.map((p) => proj.toLocal(p.lat, p.lon));
-    let traveled = 0;
+
+    // Edge normals + lengths between consecutive points (drop degenerate edges).
+    type Edge = { nx: number; nz: number; len: number };
+    const edges: Edge[] = [];
+    const verts: Array<{ x: number; z: number }> = [local[0]];
     for (let i = 0; i < local.length - 1; i++) {
-      const a = local[i];
+      const a = verts[verts.length - 1];
       const b = local[i + 1];
-      const dx = b.x - a.x;
-      const dz = b.z - a.z;
+      const dx = b.x - a.x, dz = b.z - a.z;
       const len = Math.hypot(dx, dz);
       if (len < 0.01) continue;
-      const nx = -dz / len;
-      const nz = dx / len;
-      const ox = nx * halfW;
-      const oz = nz * halfW;
+      edges.push({ nx: -dz / len, nz: dx / len, len });
+      verts.push(b);
+    }
+    if (edges.length === 0) continue;
+    const N = verts.length;
+
+    // Per-vertex miter offset. Shared between adjacent quads → no gap, no
+    // self-overlap at interior joints. Endpoints use the single edge normal.
+    const offsets: Array<{ ox: number; oz: number }> = new Array(N);
+    for (let i = 0; i < N; i++) {
+      if (i === 0) {
+        const e = edges[0];
+        offsets[0] = { ox: e.nx * halfW, oz: e.nz * halfW };
+      } else if (i === N - 1) {
+        const e = edges[N - 2];
+        offsets[i] = { ox: e.nx * halfW, oz: e.nz * halfW };
+      } else {
+        const a = edges[i - 1], b = edges[i];
+        let mx = a.nx + b.nx, mz = a.nz + b.nz;
+        const ml = Math.hypot(mx, mz);
+        if (ml < 1e-3) {
+          // 180° turn — fall back to one edge normal.
+          offsets[i] = { ox: b.nx * halfW, oz: b.nz * halfW };
+        } else {
+          mx /= ml; mz /= ml;
+          // dot(miter, edgeNormal) = cos(half-turn-angle); guards against ÷0.
+          const d = mx * b.nx + mz * b.nz;
+          const scale = Math.min(halfW / Math.max(d, 1e-3), halfW * MITER_LIMIT);
+          offsets[i] = { ox: mx * scale, oz: mz * scale };
+        }
+      }
+    }
+
+    // Emit quads. Both ends of each segment use the *shared* miter offset, so
+    // consecutive segments meet edge-to-edge (no gap), and the inner side does
+    // not overlap.
+    let traveled = 0;
+    for (let i = 0; i < N - 1; i++) {
+      const a = verts[i], b = verts[i + 1];
+      const oa = offsets[i], ob = offsets[i + 1];
+      const len = edges[i].len;
       const v0 = traveled / cfg.lengthScale;
       const v1 = (traveled + len) / cfg.lengthScale;
-      positions.push(a.x + ox, cfg.y, a.z + oz); uvs.push(0, v0);
-      positions.push(a.x - ox, cfg.y, a.z - oz); uvs.push(1, v0);
-      positions.push(b.x + ox, cfg.y, b.z + oz); uvs.push(0, v1);
-      positions.push(b.x - ox, cfg.y, b.z - oz); uvs.push(1, v1);
+      positions.push(a.x + oa.ox, cfg.y, a.z + oa.oz); uvs.push(0, v0);
+      positions.push(a.x - oa.ox, cfg.y, a.z - oa.oz); uvs.push(1, v0);
+      positions.push(b.x + ob.ox, cfg.y, b.z + ob.oz); uvs.push(0, v1);
+      positions.push(b.x - ob.ox, cfg.y, b.z - ob.oz); uvs.push(1, v1);
       // Faces +y (up).
       indices.push(vIndex, vIndex + 2, vIndex + 1);
       indices.push(vIndex + 1, vIndex + 2, vIndex + 3);
