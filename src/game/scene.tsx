@@ -9,6 +9,7 @@ import { useTileStreamer } from "../world/tile-streamer";
 import type { Built } from "../world/tile-build-client";
 import { Tile, Ground } from "./tile";
 import { WorldMeshes, type BuiltEntry } from "./world-meshes";
+import { Prewarm } from "./prewarm";
 import { Car } from "./car";
 import { FollowCamera } from "./follow-camera";
 import { Hud } from "../ui/hud";
@@ -89,6 +90,7 @@ export function Scene({ origin }: Props) {
         <fog attach="fog" args={["#cfd9e0", 100, 600]} />
 
         <Suspense fallback={null}>
+          <Prewarm />
           <Physics gravity={[0, -9.81, 0]} timeStep={1 / 60} interpolate paused={paused}>
             <Ground />
             <World proj={proj} carPos={carPos} forward={forward} />

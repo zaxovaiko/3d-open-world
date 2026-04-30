@@ -15,7 +15,7 @@ import {
   waterTexture,
 } from "../world/textures";
 
-const BUILDING_MAT: Record<BuildingKind, THREE.Material> = {
+export const BUILDING_MAT: Record<BuildingKind, THREE.Material> = {
   residential: new THREE.MeshLambertMaterial({ map: buildingKindTexture("residential") }),
   commercial: new THREE.MeshLambertMaterial({ map: buildingKindTexture("commercial") }),
   industrial: new THREE.MeshLambertMaterial({ map: buildingKindTexture("industrial") }),
@@ -23,7 +23,7 @@ const BUILDING_MAT: Record<BuildingKind, THREE.Material> = {
   generic: new THREE.MeshLambertMaterial({ map: buildingKindTexture("generic") }),
 };
 
-const ROAD_MAT: Record<RoadKind, THREE.Material> = {
+export const ROAD_MAT: Record<RoadKind, THREE.Material> = {
   car: new THREE.MeshBasicMaterial({ map: roadTexture() }),
   bike: new THREE.MeshBasicMaterial({ map: bikeTexture() }),
   bus: new THREE.MeshBasicMaterial({ map: busTexture() }),
