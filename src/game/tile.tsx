@@ -1,5 +1,7 @@
-import { useEffect, useMemo } from "react";
-import { RigidBody } from "@react-three/rapier";
+import { useEffect, useMemo, useRef } from "react";
+import { RigidBody, type RapierRigidBody } from "@react-three/rapier";
+import { useFrame } from "@react-three/fiber";
+import * as THREE from "three";
 import type { TileData } from "../types";
 import type { Projector } from "../world/project";
 import { buildTileInWorker, type Built } from "../world/tile-build-client";
@@ -30,22 +32,54 @@ export function Tile({ tile, proj, onBuilt, onUnmount }: Props) {
 }
 
 export const GROUND_SIZE = 4000;
-const TERRAIN_SIZE = 3000;
+const TERRAIN_SIZE = 4000;
 const TERRAIN_SEGMENTS = 1; // flat — elevation removed
+const FOLLOW_SNAP_M = 4; // re-centre when player has moved this far
 
-export function Ground() {
+type GroundProps = {
+  playerPosRef: React.RefObject<{ pos: THREE.Vector3 } | null>;
+};
+
+// Ground follows the player. Visual mesh + physics body snap to a quantised
+// world position so they always extend GROUND_SIZE / 2 in every direction
+// from the car. Texture repeat is wide enough that the snap step never
+// reveals a seam.
+export function Ground({ playerPosRef }: GroundProps) {
   const tex = useMemo(() => {
     const t = groundTexture();
     t.repeat.set(120, 120);
     return t;
   }, []);
   const terrainGeom = useMemo(() => buildTerrainGeometry(TERRAIN_SIZE, TERRAIN_SEGMENTS), []);
+
+  const visualRef = useRef<THREE.Mesh>(null);
+  const bodyRef = useRef<RapierRigidBody>(null);
+  const lastSnap = useRef({ x: 0, z: 0 });
+
+  useFrame(() => {
+    const p = playerPosRef.current?.pos;
+    if (!p) return;
+    // Snap to nearest FOLLOW_SNAP_M so we don't write a transform every frame.
+    const sx = Math.round(p.x / FOLLOW_SNAP_M) * FOLLOW_SNAP_M;
+    const sz = Math.round(p.z / FOLLOW_SNAP_M) * FOLLOW_SNAP_M;
+    if (sx === lastSnap.current.x && sz === lastSnap.current.z) return;
+    lastSnap.current.x = sx;
+    lastSnap.current.z = sz;
+    if (visualRef.current) visualRef.current.position.set(sx, 0, sz);
+    if (bodyRef.current) bodyRef.current.setNextKinematicTranslation({ x: sx, y: -0.5, z: sz });
+  });
+
   return (
     <>
-      <mesh geometry={terrainGeom}>
+      <mesh ref={visualRef} geometry={terrainGeom}>
         <meshLambertMaterial map={tex} />
       </mesh>
-      <RigidBody type="fixed" colliders="cuboid" position={[0, -0.5, 0]}>
+      <RigidBody
+        ref={bodyRef}
+        type="kinematicPosition"
+        colliders="cuboid"
+        position={[0, -0.5, 0]}
+      >
         <mesh>
           <boxGeometry args={[GROUND_SIZE, 1, GROUND_SIZE]} />
           <meshLambertMaterial map={tex} transparent opacity={0} />

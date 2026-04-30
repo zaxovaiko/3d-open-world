@@ -102,7 +102,7 @@ export function Scene({ origin }: Props) {
         <Suspense fallback={null}>
           <Prewarm />
           <Physics gravity={[0, -9.81, 0]} timeStep={1 / 60} interpolate paused={paused}>
-            <Ground />
+            <Ground playerPosRef={poseRef} />
             <WaterAnimator />
             <World
               proj={proj}
