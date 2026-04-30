@@ -128,17 +128,26 @@ export function Grass({ playerPosRef, built }: Props) {
     const scl = new THREE.Vector3();
     const yAxis = new THREE.Vector3(0, 1, 0);
     const hidden = new THREE.Vector3(0, -1000, 0);
-    // Position blades in WORLD cells: each blade's appearance is keyed off
-    // its world-integer cell, not its instance index. As the player moves,
-    // instance #5 gets reassigned to a different world cell, and that cell
-    // has its own deterministic jitter — so the field looks stationary in
-    // world space while the patch slides under it.
+    // Ring-buffer mapping: each instance owns a slot (instanceX, instanceZ)
+    // in the patch grid. Its world cell is the unique cell within the patch
+    // whose world coords satisfy `cell ≡ (instanceX, instanceZ) (mod D)`.
+    // That means the instance stays mapped to the SAME world cell until the
+    // patch slides far enough that the cell falls off one edge — only then
+    // does it wrap to the freshly-uncovered edge on the opposite side. The
+    // grass field reads as stationary in world space; only blades at the
+    // patch boundary appear/disappear as the player moves.
+    const lowX = ox - RADIUS_M;
+    const lowZ = oz - RADIUS_M;
+    const lowXMod = ((lowX % D) + D) % D;
+    const lowZMod = ((lowZ % D) + D) % D;
     let i = 0;
-    for (let dz = -RADIUS_M; dz < RADIUS_M; dz++) {
-      const wz = oz + dz;
-      for (let dx = -RADIUS_M; dx < RADIUS_M; dx++) {
-        const wx = ox + dx;
-        const idx = (dz + RADIUS_M) * D + (dx + RADIUS_M);
+    for (let iz = 0; iz < D; iz++) {
+      const dz = (iz - lowZMod + D) % D;
+      const wz = lowZ + dz;
+      for (let ix = 0; ix < D; ix++) {
+        const dx = (ix - lowXMod + D) % D;
+        const wx = lowX + dx;
+        const idx = dz * D + dx;
         if (mask[idx]) {
           mat4.compose(hidden, quat, _zeroScale);
         } else {
