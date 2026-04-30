@@ -110,8 +110,10 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
 // --- Building build (typed arrays) ---
 
 const DEFAULT_HEIGHT = 8;
-const WINDOW_W_M = 4;
-const WINDOW_H_M = 12;
+// Texture repeat in metres. Hi-res textures ship with an 8×10 window grid,
+// so 8m × 30m per repeat keeps individual windows ~1m wide × ~3m tall.
+const WINDOW_W_M = 8;
+const WINDOW_H_M = 30;
 
 type Pt = { x: number; z: number };
 
