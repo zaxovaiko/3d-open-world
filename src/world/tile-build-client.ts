@@ -17,6 +17,8 @@ export type Built = {
   roads: Partial<Record<RoadKind, THREE.BufferGeometry>>;
   trees: TreeInstance[];
   peaks: PeakInstance[];
+  // Centerlines for car roads — used by AI traffic.
+  carRoadCenterlines: Float32Array[];
 };
 
 let worker: Worker | null = null;
@@ -164,7 +166,13 @@ export function buildTileInWorker(
       for (const k of Object.keys(out.roads) as RoadKind[]) {
         roads[k] = roadGeometry(out.roads[k]!);
       }
-      const built: Built = { buildings, roads, trees: out.trees, peaks: out.peaks };
+      const built: Built = {
+        buildings,
+        roads,
+        trees: out.trees,
+        peaks: out.peaks,
+        carRoadCenterlines: out.carRoadCenterlines,
+      };
       touchLRU(cacheKey, built);
       inFlightCache.delete(cacheKey);
       if (cancelled) return reject(new Error("cancelled"));
