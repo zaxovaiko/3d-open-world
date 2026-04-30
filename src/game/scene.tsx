@@ -13,6 +13,7 @@ import { Prewarm } from "./prewarm";
 import { Car } from "./car";
 import { FollowCamera } from "./follow-camera";
 import { AICars } from "./ai-cars";
+import { Grass } from "./grass";
 import { Hud } from "../ui/hud";
 
 type Props = { origin: LatLon };
@@ -169,6 +170,7 @@ function World({
       ))}
       <WorldMeshes built={builtList} />
       <AICars built={builtList} playerPosRef={poseRef} />
+      <Grass built={builtList} playerPosRef={poseRef} />
     </>
   );
 }
