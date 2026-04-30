@@ -346,6 +346,22 @@ type RoadRaw = {
 // far past the joint. 4 = up to 4× halfW. Beyond that we cap.
 const MITER_LIMIT = 4;
 
+// Chaikin's corner-cutting algorithm. Each interior vertex is replaced by
+// two new vertices at 1/4 and 3/4 along its adjacent edges, smoothing
+// sharp OSM angles into curves. Endpoints are preserved.
+function chaikinSmooth(pts: Array<{ x: number; z: number }>): Array<{ x: number; z: number }> {
+  if (pts.length < 3) return pts;
+  const out: Array<{ x: number; z: number }> = [];
+  out.push(pts[0]);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    out.push({ x: a.x * 0.75 + b.x * 0.25, z: a.z * 0.75 + b.z * 0.25 });
+    out.push({ x: a.x * 0.25 + b.x * 0.75, z: a.z * 0.25 + b.z * 0.75 });
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
 function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw | null {
   const positions: number[] = [];
   const uvs: number[] = [];
@@ -363,7 +379,11 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
     const pts = w.geometry;
     if (pts.length < 2) continue;
     const halfW = widthFor(kind, w) / 2;
-    const local = pts.map((p) => proj.toLocal(p.lat, p.lon));
+    const projected = pts.map((p) => proj.toLocal(p.lat, p.lon));
+    // Chaikin corner-cutting: every interior vertex splits into two new
+    // points at 1/4 and 3/4 along each adjacent edge, so sharp OSM corners
+    // become rounded curves. Two passes is enough; endpoints stay fixed.
+    const local = chaikinSmooth(chaikinSmooth(projected));
     const yJitter = (wayIdx % 7 - 3) * Y_JITTER_STEP;
     const yBase = cfg.y + yJitter;
     wayIdx++;
@@ -497,16 +517,19 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   const trees = buildTreeInstances(classified.trees, proj);
   const peaks = buildPeakInstances(classified.peaks, proj);
 
-  // Car-road centerlines for AI driving.
+  // Car-road centerlines for AI driving. Smoothed with the same Chaikin pass
+  // applied to road geometry so AI traffic follows the curves the player sees
+  // instead of cutting corners on the original OSM polyline.
   const carRoadCenterlines: Float32Array[] = [];
   for (const w of classified.roads.car) {
     const pts = w.geometry;
     if (pts.length < 2) continue;
-    const arr = new Float32Array(pts.length * 2);
-    for (let i = 0; i < pts.length; i++) {
-      const p = proj.toLocal(pts[i].lat, pts[i].lon);
-      arr[i * 2] = p.x;
-      arr[i * 2 + 1] = p.z;
+    const projected = pts.map((p) => proj.toLocal(p.lat, p.lon));
+    const smoothed = chaikinSmooth(chaikinSmooth(projected));
+    const arr = new Float32Array(smoothed.length * 2);
+    for (let i = 0; i < smoothed.length; i++) {
+      arr[i * 2] = smoothed[i].x;
+      arr[i * 2 + 1] = smoothed[i].z;
     }
     carRoadCenterlines.push(arr);
   }
