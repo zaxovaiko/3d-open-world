@@ -6,28 +6,20 @@ import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import * as THREE from "three";
 import type { BuiltEntry } from "./world-meshes";
 
-// More cars + multiple GLB variants for visual variety. Variant chosen by
-// instance index so the same slot keeps the same model when streaming.
-const COUNT = 30;
-const SPEED = 9; // m/s ~32 km/h
-const SPAWN_RADIUS = 500;
-const DESPAWN_RADIUS = 1100;
+const COUNT = 5;
+const SPEED = 11; // m/s, ~40 km/h
+const SPAWN_RADIUS = 600;
+const DESPAWN_RADIUS = 1200;
 const HIDDEN_Y = -200;
-const MIN_GAP_M = 14;
-const SLOW_GAP_M = 26;
-const REPLAN_PADDING = 8;
+const MIN_GAP_M = 60; // trams are long, keep them apart
+const SLOW_GAP_M = 100;
+const REPLAN_PADDING = 30;
 const ENDPOINT_GRID_M = 2;
 
-const GLB_VARIANTS = [
-  { url: "/ai-cars/sports.glb", targetLength: 4.4, yawOffset: 0 },
-  { url: "/ai-cars/hatchback.glb", targetLength: 3.9, yawOffset: 0 },
-  { url: "/ai-cars/police.glb", targetLength: 4.5, yawOffset: 0 },
-  { url: "/ai-cars/sedan.glb", targetLength: 4.5, yawOffset: 0 },
-  { url: "/ai-cars/sports2.glb", targetLength: 4.4, yawOffset: 0 },
-  { url: "/ai-cars/pickup.glb", targetLength: 5.0, yawOffset: 0 },
-];
+const TRAM_GLB = "/ai-cars/tram.glb";
+const TARGET_LENGTH_M = 18;
 
-for (const v of GLB_VARIANTS) useGLTF.preload(v.url);
+useGLTF.preload(TRAM_GLB);
 
 type AIState = {
   body: RapierRigidBody | null;
@@ -42,10 +34,10 @@ type Props = {
   playerPosRef: React.RefObject<{ pos: THREE.Vector3 } | null>;
 };
 
-export function AICars({ built, playerPosRef }: Props) {
+export function AITrams({ built, playerPosRef }: Props) {
   const { ways, lens, endpointMap } = useMemo(() => {
     const out: Float32Array[] = [];
-    for (const e of built) for (const w of e.data.carRoadCenterlines) out.push(w);
+    for (const e of built) for (const w of e.data.tramCenterlines) out.push(w);
     const lengths = out.map(wayLength);
 
     const map = new Map<string, Array<{ way: Float32Array; atStart: boolean }>>();
@@ -73,7 +65,7 @@ export function AICars({ built, playerPosRef }: Props) {
     endpointMapRef.current = endpointMap;
   }, [ways, lens, endpointMap]);
 
-  const carsRef = useRef<AIState[]>(
+  const tramsRef = useRef<AIState[]>(
     Array.from({ length: COUNT }, () => ({ body: null, way: null, segIdx: 0, t: 0, arc: 0 })),
   );
 
@@ -81,23 +73,23 @@ export function AICars({ built, playerPosRef }: Props) {
   const tmpAxis = useMemo(() => new THREE.Vector3(0, 1, 0), []);
 
   useFrame((_, dt) => {
-    const cars = carsRef.current;
+    const trams = tramsRef.current;
     const ws = waysRef.current;
     if (ws.length === 0) return;
     const player = playerPosRef.current?.pos;
     const px = player?.x ?? 0, pz = player?.z ?? 0;
 
-    for (const c of cars) {
+    for (const c of trams) {
       if (c.way) c.arc = arcLength(c.way, c.segIdx, c.t);
     }
 
-    for (const c of cars) {
+    for (const c of trams) {
       if (!c.body) continue;
       const tr = c.body.translation();
       const distToPlayer = Math.hypot(tr.x - px, tr.z - pz);
 
       if (!c.way || distToPlayer > DESPAWN_RADIUS) {
-        const slot = findSpawnSlot(ws, lensRef.current, cars, c, px, pz, SPAWN_RADIUS);
+        const slot = findSpawnSlot(ws, lensRef.current, trams, c, px, pz, SPAWN_RADIUS);
         if (!slot) {
           c.way = null;
           c.body.setNextKinematicTranslation({ x: tr.x, y: HIDDEN_Y, z: tr.z });
@@ -114,7 +106,7 @@ export function AICars({ built, playerPosRef }: Props) {
       }
 
       let aheadGap = Infinity;
-      for (const o of cars) {
+      for (const o of trams) {
         if (o === c || o.way !== c.way) continue;
         const gap = o.arc - c.arc;
         if (gap > 0 && gap < aheadGap) aheadGap = gap;
@@ -154,7 +146,7 @@ export function AICars({ built, playerPosRef }: Props) {
       const dx = vx - ux, dz = vz - uz;
       const yaw = Math.atan2(dx, dz);
 
-      c.body.setNextKinematicTranslation({ x: tx, y: 0.6, z: tz });
+      c.body.setNextKinematicTranslation({ x: tx, y: 0.5, z: tz });
       tmpQ.setFromAxisAngle(tmpAxis, yaw);
       c.body.setNextKinematicRotation({ x: tmpQ.x, y: tmpQ.y, z: tmpQ.z, w: tmpQ.w });
     }
@@ -162,10 +154,9 @@ export function AICars({ built, playerPosRef }: Props) {
 
   return (
     <>
-      {carsRef.current.map((c, i) => (
-        <AICarBody
+      {tramsRef.current.map((c, i) => (
+        <TramBody
           key={i}
-          variantIdx={i % GLB_VARIANTS.length}
           attachBody={(b) => { c.body = b; }}
         />
       ))}
@@ -173,34 +164,25 @@ export function AICars({ built, playerPosRef }: Props) {
   );
 }
 
-function AICarBody({
-  variantIdx,
+function TramBody({
   attachBody,
 }: {
-  variantIdx: number;
   attachBody: (b: RapierRigidBody | null) => void;
 }) {
-  const variant = GLB_VARIANTS[variantIdx];
-  const gltf = useGLTF(variant.url);
-  // Each car instance owns a clone of the source scene so they can animate
-  // independently. SkeletonUtils.clone preserves any skinned meshes; for
-  // static car models it also handles plain mesh hierarchies.
+  const gltf = useGLTF(TRAM_GLB);
   const sceneClone = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
 
-  // Compute scale + offsets once per variant.
   const { scale, yShift, yawFix } = useMemo(() => {
     const box = new THREE.Box3().setFromObject(gltf.scene);
     const size = new THREE.Vector3();
     box.getSize(size);
-    // Pick longest horizontal axis as length; other horizontal as width.
     const lengthAxis = size.x > size.z ? "x" : "z";
     const lengthVal = lengthAxis === "x" ? size.x : size.z;
-    const s = variant.targetLength / Math.max(lengthVal, 0.01);
-    // yawFix rotates car so its longest axis aligns with +Z (driving forward).
+    const s = TARGET_LENGTH_M / Math.max(lengthVal, 0.01);
     const yaw = lengthAxis === "x" ? Math.PI / 2 : 0;
     const yShiftVal = -box.min.y * s;
-    return { scale: s, yShift: yShiftVal, yawFix: yaw + variant.yawOffset };
-  }, [gltf.scene, variant]);
+    return { scale: s, yShift: yShiftVal, yawFix: yaw };
+  }, [gltf.scene]);
 
   return (
     <RigidBody
@@ -210,8 +192,8 @@ function AICarBody({
       position={[0, HIDDEN_Y, 0]}
       ccd
     >
-      <CuboidCollider args={[0.9, 0.6, variant.targetLength / 2]} restitution={0.05} friction={0.5} />
-      <group rotation={[0, yawFix, 0]} scale={scale} position={[0, yShift - 0.6, 0]}>
+      <CuboidCollider args={[1.3, 1.3, TARGET_LENGTH_M / 2]} restitution={0.05} friction={0.5} />
+      <group rotation={[0, yawFix, 0]} scale={scale} position={[0, yShift - 0.5, 0]}>
         <primitive object={sceneClone} />
       </group>
     </RigidBody>
@@ -286,7 +268,7 @@ function arcLength(w: Float32Array, segIdx: number, t: number): number {
 function findSpawnSlot(
   ways: Float32Array[],
   lens: number[],
-  cars: AIState[],
+  trams: AIState[],
   self: AIState,
   px: number,
   pz: number,
@@ -312,7 +294,7 @@ function findSpawnSlot(
     for (let attempt = 0; attempt < 4; attempt++) {
       const targetArc = Math.random() * (totalLen - REPLAN_PADDING * 2) + REPLAN_PADDING;
       let ok = true;
-      for (const o of cars) {
+      for (const o of trams) {
         if (o === self || o.way !== w) continue;
         if (Math.abs(o.arc - targetArc) < MIN_GAP_M) { ok = false; break; }
       }

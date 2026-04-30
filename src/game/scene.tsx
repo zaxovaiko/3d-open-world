@@ -13,6 +13,7 @@ import { Prewarm } from "./prewarm";
 import { Car } from "./car";
 import { FollowCamera } from "./follow-camera";
 import { AICars } from "./ai-cars";
+import { AITrams } from "./ai-trams";
 import { Grass } from "./grass";
 import { Hud } from "../ui/hud";
 
@@ -78,11 +79,18 @@ export function Scene({ origin }: Props) {
     <>
       <Canvas
         camera={{ position: [0, 8, -15], fov: 60, near: 0.1, far: 700 }}
-        dpr={[0.6, 1]}
-        gl={{ antialias: false, powerPreference: "high-performance", stencil: false, depth: true }}
+        dpr={[0.85, 1.25]}
+        gl={{
+          antialias: true,
+          powerPreference: "high-performance",
+          stencil: false,
+          depth: true,
+        }}
         onCreated={({ scene, gl }) => {
           scene.background = new THREE.Color("#cfd9e0");
           gl.setClearColor("#cfd9e0");
+          gl.toneMapping = THREE.ACESFilmicToneMapping;
+          gl.toneMappingExposure = 1.05;
         }}
       >
         <AdaptiveDpr pixelated />
@@ -170,6 +178,7 @@ function World({
       ))}
       <WorldMeshes built={builtList} />
       <AICars built={builtList} playerPosRef={poseRef} />
+      <AITrams built={builtList} playerPosRef={poseRef} />
       <Grass built={builtList} playerPosRef={poseRef} />
     </>
   );
