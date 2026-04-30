@@ -67,11 +67,14 @@ function computeNormalsIndexed(positions: Float32Array, indices: Uint32Array): F
 
 // --- Overpass classification (mirrors what fetchTile used to do on main thread) ---
 
+export type PoiKind = "lamp" | "bench" | "mailbox" | "hydrant" | "signpost";
+
 type ClassifiedTile = {
   buildings: OsmWay[];
   roads: Record<RoadKind, OsmWay[]>;
   trees: OsmNode[];
   peaks: OsmNode[];
+  pois: Record<PoiKind, OsmNode[]>;
 };
 
 function classifyElements(data: OverpassResponse): ClassifiedTile {
@@ -82,6 +85,9 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
   };
   const trees: OsmNode[] = [];
   const peaks: OsmNode[] = [];
+  const pois: Record<PoiKind, OsmNode[]> = {
+    lamp: [], bench: [], mailbox: [], hydrant: [], signpost: [],
+  };
 
   for (const el of data.elements) {
     if (el.type === "way" && el.geometry?.length) {
@@ -118,11 +124,17 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
           roads.street.push(el);
       }
     } else if (el.type === "node") {
-      if (el.tags?.natural === "tree") trees.push(el);
-      else if (el.tags?.natural === "peak") peaks.push(el);
+      const t = el.tags ?? {};
+      if (t.natural === "tree") trees.push(el);
+      else if (t.natural === "peak") peaks.push(el);
+      else if (t.highway === "street_lamp") pois.lamp.push(el);
+      else if (t.amenity === "bench") pois.bench.push(el);
+      else if (t.amenity === "post_box") pois.mailbox.push(el);
+      else if (t.emergency === "fire_hydrant") pois.hydrant.push(el);
+      else if (t.traffic_sign) pois.signpost.push(el);
     }
   }
-  return { buildings, roads, trees, peaks };
+  return { buildings, roads, trees, peaks, pois };
 }
 
 // --- Building build (typed arrays) ---
@@ -533,6 +545,9 @@ export type WorkerOutput = {
   // AI traffic to follow streets without re-parsing geometry on the main thread.
   carRoadCenterlines: Float32Array[];
   tramCenterlines: Float32Array[];
+  // Per-kind POI positions. Flat (x, z) pairs per kind. Rendered as
+  // InstancedMesh per kind on the main thread using GLB models.
+  pois: Record<PoiKind, Float32Array>;
 };
 
 self.onmessage = (e: MessageEvent<WorkerInput>) => {
@@ -591,8 +606,22 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   collectCenterlines(classified.roads.service, carRoadCenterlines);
   collectCenterlines(classified.roads.tram, tramCenterlines);
 
+  // POIs: project each node and pack flat (x, z) pairs per kind.
+  const poiKinds: PoiKind[] = ["lamp", "bench", "mailbox", "hydrant", "signpost"];
+  const poisOut = {} as Record<PoiKind, Float32Array>;
+  for (const k of poiKinds) {
+    const nodes = classified.pois[k];
+    const arr = new Float32Array(nodes.length * 2);
+    for (let i = 0; i < nodes.length; i++) {
+      const p = proj.toLocal(nodes[i].lat, nodes[i].lon);
+      arr[i * 2] = p.x;
+      arr[i * 2 + 1] = p.z;
+    }
+    poisOut[k] = arr;
+  }
+
   const out: WorkerOutput = {
-    reqId, buildings, roads, trees, peaks, carRoadCenterlines, tramCenterlines,
+    reqId, buildings, roads, trees, peaks, carRoadCenterlines, tramCenterlines, pois: poisOut,
   };
 
   // Collect transferable buffers — zero-copy transfer to main thread.
@@ -612,6 +641,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   }
   for (const cl of carRoadCenterlines) transfers.push(cl.buffer as ArrayBuffer);
   for (const cl of tramCenterlines) transfers.push(cl.buffer as ArrayBuffer);
+  for (const k of poiKinds) transfers.push(poisOut[k].buffer as ArrayBuffer);
 
   (self as unknown as Worker).postMessage(out, transfers);
 };

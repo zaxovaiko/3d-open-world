@@ -4,7 +4,7 @@ import type { BuildingAABB, BuildingKind } from "./buildings-shared";
 import type { TreeInstance } from "./trees";
 import type { PeakInstance } from "./peaks";
 import TileWorker from "./tile-worker?worker";
-import type { WorkerInput, WorkerOutput } from "./tile-worker";
+import type { WorkerInput, WorkerOutput, PoiKind } from "./tile-worker";
 
 export type BuildingMesh = {
   geometry: THREE.BufferGeometry;
@@ -21,6 +21,8 @@ export type Built = {
   carRoadCenterlines: Float32Array[];
   // Centerlines for tram/rail — used by AI trams.
   tramCenterlines: Float32Array[];
+  // POI positions per kind, flat (x, z) pairs.
+  pois: Record<PoiKind, Float32Array>;
 };
 
 let worker: Worker | null = null;
@@ -175,6 +177,7 @@ export function buildTileInWorker(
         peaks: out.peaks,
         carRoadCenterlines: out.carRoadCenterlines,
         tramCenterlines: out.tramCenterlines,
+        pois: out.pois,
       };
       touchLRU(cacheKey, built);
       inFlightCache.delete(cacheKey);
