@@ -1,0 +1,160 @@
+:root {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #fff;
+  background: #0e1218;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+canvas {
+  display: block;
+}
+
+/* Start screen */
+.start {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 30% 20%, #1f2937 0%, #0e1218 70%);
+}
+
+.start .card {
+  background: #131923;
+  padding: 32px;
+  border-radius: 16px;
+  width: min(440px, 90vw);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.start h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+}
+
+.start p {
+  margin: 0 0 18px;
+  color: #9aa3b2;
+  font-size: 14px;
+}
+
+.start .row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.start label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: #9aa3b2;
+  flex: 1;
+}
+
+.start input {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #2a3340;
+  background: #0e1218;
+  color: #fff;
+  font-size: 14px;
+}
+
+.start .presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.start .presets button {
+  background: #1c2330;
+  color: #cbd5e1;
+  border: 1px solid #2a3340;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.start .presets button:hover {
+  background: #243044;
+}
+
+.start button.primary {
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 0;
+  background: #cc2233;
+  color: #fff;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.start button.primary:hover {
+  background: #e02a3c;
+}
+
+.start .err {
+  background: #3a1a1a;
+  color: #ff8d8d;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.start .tip {
+  margin-top: 14px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.start a {
+  color: #9ec5fe;
+}
+
+/* HUD */
+.hud {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 24px;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+.hud .speed {
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.hud .help {
+  align-self: end;
+  font-size: 13px;
+  color: #d8dee8;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 6px 12px;
+  border-radius: 8px;
+  pointer-events: auto;
+}
