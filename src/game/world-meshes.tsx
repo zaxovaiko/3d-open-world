@@ -7,6 +7,7 @@ import type { TreeInstance, TreeKind } from "../world/trees";
 import { TreeFleet } from "./tree-fleet";
 import {
   bikeTexture,
+  buildingKindTexture,
   busTexture,
   footwayTexture,
   highwayTexture,
@@ -16,6 +17,8 @@ import {
   tramTexture,
   waterTexture,
 } from "../world/textures";
+
+const HOUSE_MAT = new THREE.MeshLambertMaterial({ map: buildingKindTexture("house") });
 
 // River-only material — keep a typed handle so the animator can scroll the UV.
 const RIVER_TEX = waterTexture();
@@ -74,6 +77,16 @@ export function WorldMeshes({ built }: Props) {
 
   return (
     <group matrixAutoUpdate={false}>
+      {built.map((e) =>
+        e.data.houseGeom ? (
+          <mesh
+            key={`h_${e.key}`}
+            geometry={e.data.houseGeom}
+            material={HOUSE_MAT}
+            matrixAutoUpdate={false}
+          />
+        ) : null,
+      )}
       {built.map((e) =>
         e.data.waterArea ? (
           <mesh

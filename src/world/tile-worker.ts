@@ -10,6 +10,7 @@ import {
 } from "./buildings-shared";
 import { buildTreeInstances, type TreeInstance } from "./trees";
 import { buildPeakInstances, type PeakInstance } from "./peaks";
+import { classifySign, SIGN_KINDS, type SignKind } from "./road-signs";
 
 // --- Geometry helpers (run on worker thread) ---
 
@@ -48,6 +49,7 @@ type ClassifiedTile = {
   trees: OsmNode[];
   peaks: OsmNode[];
   pois: Record<PoiKind, OsmNode[]>;
+  signs: Record<SignKind, OsmNode[]>;
   // Closed-polygon water rings (lakes/ponds/reservoirs/riverbanks). Each
   // entry is an outer ring in lon/lat space.
   waterPolys: OsmGeomLatLon[][];
@@ -125,6 +127,8 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
   const pois: Record<PoiKind, OsmNode[]> = {
     lamp: [], bench: [], mailbox: [], hydrant: [], signpost: [],
   };
+  const signs = {} as Record<SignKind, OsmNode[]>;
+  for (const k of SIGN_KINDS) signs[k] = [];
   const waterPolys: OsmGeomLatLon[][] = [];
 
   for (const el of data.elements) {
@@ -175,7 +179,7 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
       else if (t.amenity === "bench") pois.bench.push(el);
       else if (t.amenity === "post_box") pois.mailbox.push(el);
       else if (t.emergency === "fire_hydrant") pois.hydrant.push(el);
-      else if (t.traffic_sign) pois.signpost.push(el);
+      else if (t.traffic_sign) signs[classifySign(t)].push(el);
     } else if (el.type === "relation") {
       const t = el.tags ?? {};
       if (!isWaterAreaTags(t)) continue;
@@ -189,7 +193,7 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
       for (const r of rings) waterPolys.push(r.slice(0, -1));
     }
   }
-  return { buildings, roads, trees, peaks, pois, waterPolys };
+  return { buildings, roads, trees, peaks, pois, signs, waterPolys };
 }
 
 // --- Building build (typed arrays) ---
@@ -231,6 +235,10 @@ type BuildingRaw = {
 type PreparedBuilding = {
   kind: BuildingKind;
   aabb: BuildingAABB;
+  // Populated only for kinds rendered as extruded polygons (e.g. "house"),
+  // not for GLB-instance kinds.
+  ring?: Pt[];
+  h?: number;
 };
 
 function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): PreparedBuilding | null {
@@ -241,8 +249,11 @@ function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): Prepar
   const raw = closed ? pts.slice(0, -1) : pts;
   if (raw.length < 3) return null;
 
-  const ring: Pt[] = raw.map((p) => proj.toLocal(p.lat, p.lon));
-  if (Math.abs(signedArea(ring)) < 1) return null;
+  let ring: Pt[] = raw.map((p) => proj.toLocal(p.lat, p.lon));
+  const area = signedArea(ring);
+  if (Math.abs(area) < 1) return null;
+  // CCW for extrusion math (winding-dependent wall orientation).
+  if (area < 0) ring = ring.slice().reverse();
 
   const h = parseHeight(w.tags);
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -252,17 +263,18 @@ function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): Prepar
     if (p.z < minZ) minZ = p.z;
     if (p.z > maxZ) maxZ = p.z;
   }
-  return {
-    kind,
-    aabb: {
-      cx: (minX + maxX) / 2,
-      cy: h / 2,
-      cz: (minZ + maxZ) / 2,
-      hx: (maxX - minX) / 2,
-      hy: h / 2,
-      hz: (maxZ - minZ) / 2,
-    },
+  const aabb: BuildingAABB = {
+    cx: (minX + maxX) / 2,
+    cy: h / 2,
+    cz: (minZ + maxZ) / 2,
+    hx: (maxX - minX) / 2,
+    hy: h / 2,
+    hz: (maxZ - minZ) / 2,
   };
+  // Houses render as extruded polygons (old style). Other kinds use GLB
+  // instances and only need the AABB.
+  if (kind === "house") return { kind, aabb, ring, h };
+  return { kind, aabb };
 }
 
 function buildBuildingsRawFromPrepared(
@@ -276,6 +288,104 @@ function buildBuildingsRawFromPrepared(
     aabbs.push(b.aabb);
   }
   return aabbs.length ? { aabbs } : null;
+}
+
+// House facade UV scale: 8m horizontal, 30m vertical per repeat.
+const WINDOW_W_M = 8;
+const WINDOW_H_M = 30;
+
+type ExtrudedRaw = {
+  positions: Float32Array;
+  uvs: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
+  bsphere: BSphere;
+};
+
+function computeIndexedNormals(positions: Float32Array, indices: Uint32Array): Float32Array {
+  const normals = new Float32Array(positions.length);
+  for (let i = 0; i < indices.length; i += 3) {
+    const ia = indices[i] * 3;
+    const ib = indices[i + 1] * 3;
+    const ic = indices[i + 2] * 3;
+    const ax = positions[ia], ay = positions[ia + 1], az = positions[ia + 2];
+    const bx = positions[ib], by = positions[ib + 1], bz = positions[ib + 2];
+    const cx = positions[ic], cy = positions[ic + 1], cz = positions[ic + 2];
+    const ex = bx - ax, ey = by - ay, ez = bz - az;
+    const fx = cx - ax, fy = cy - ay, fz = cz - az;
+    const nx = ey * fz - ez * fy;
+    const ny = ez * fx - ex * fz;
+    const nz = ex * fy - ey * fx;
+    normals[ia] += nx; normals[ia + 1] += ny; normals[ia + 2] += nz;
+    normals[ib] += nx; normals[ib + 1] += ny; normals[ib + 2] += nz;
+    normals[ic] += nx; normals[ic + 1] += ny; normals[ic + 2] += nz;
+  }
+  for (let i = 0; i < normals.length; i += 3) {
+    const x = normals[i], y = normals[i + 1], z = normals[i + 2];
+    const l = Math.hypot(x, y, z) || 1;
+    normals[i] = x / l; normals[i + 1] = y / l; normals[i + 2] = z / l;
+  }
+  return normals;
+}
+
+function buildExtrudedFromPrepared(
+  prepared: PreparedBuilding[],
+  kind: BuildingKind,
+): ExtrudedRaw | null {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  let baseV = 0;
+  for (const b of prepared) {
+    if (b.kind !== kind || !b.ring || b.h == null) continue;
+    const ring = b.ring;
+    const h = b.h;
+    const N = ring.length;
+
+    // Roof: triangulate via earcut on flat (x,z).
+    const flat: number[] = [];
+    for (const p of ring) flat.push(p.x, p.z);
+    const tris = earcut(flat);
+    for (let i = 0; i < N; i++) {
+      positions.push(ring[i].x, h, ring[i].z);
+      uvs.push(ring[i].x / WINDOW_W_M, ring[i].z / WINDOW_W_M);
+    }
+    // earcut emits CW for CCW input on +z-down (image) coords. Our ring is
+    // CCW in (x,z) world plane → flip winding so roof normal points +y.
+    for (let i = 0; i < tris.length; i += 3) {
+      indices.push(baseV + tris[i], baseV + tris[i + 2], baseV + tris[i + 1]);
+    }
+    baseV += N;
+
+    // Walls: outward-facing quads, perimeter UV.
+    let perim = 0;
+    for (let i = 0; i < N; i++) {
+      const j = (i + 1) % N;
+      const ax = ring[i].x, az = ring[i].z;
+      const bx = ring[j].x, bz = ring[j].z;
+      const len = Math.hypot(bx - ax, bz - az);
+      const u0 = perim / WINDOW_W_M;
+      const u1 = (perim + len) / WINDOW_W_M;
+      const v1 = h / WINDOW_H_M;
+      perim += len;
+      positions.push(ax, 0, az); uvs.push(u0, 0);
+      positions.push(bx, 0, bz); uvs.push(u1, 0);
+      positions.push(bx, h, bz); uvs.push(u1, v1);
+      positions.push(ax, h, az); uvs.push(u0, v1);
+      indices.push(baseV, baseV + 2, baseV + 1, baseV, baseV + 3, baseV + 2);
+      baseV += 4;
+    }
+  }
+  if (!positions.length) return null;
+  const pos = new Float32Array(positions);
+  const idx = new Uint32Array(indices);
+  return {
+    positions: pos,
+    uvs: new Float32Array(uvs),
+    normals: computeIndexedNormals(pos, idx),
+    indices: idx,
+    bsphere: computeSphere(pos),
+  };
 }
 
 // --- Road build (typed arrays) ---
@@ -536,6 +646,7 @@ export type WorkerInput = {
 export type WorkerOutput = {
   reqId: number;
   buildings: Partial<Record<BuildingKind, BuildingRaw>>;
+  houseGeom: ExtrudedRaw | null;
   roads: Partial<Record<RoadKind, RoadRaw>>;
   waterArea: RoadRaw | null;
   trees: TreeInstance[];
@@ -551,6 +662,9 @@ export type WorkerOutput = {
   // Per-kind POI positions. Flat (x, z) pairs per kind. Rendered as
   // InstancedMesh per kind on the main thread using GLB models.
   pois: Record<PoiKind, Float32Array>;
+  // Per-kind road sign positions (Vienna Convention pictograms drawn on
+  // procedural billboards). Flat (x, z) pairs.
+  signs: Record<SignKind, Float32Array>;
 };
 
 self.onmessage = (e: MessageEvent<WorkerInput>) => {
@@ -570,9 +684,12 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   }
   const buildings: Partial<Record<BuildingKind, BuildingRaw>> = {};
   for (const k of BUILDING_KINDS) {
+    // Houses render as extruded polygons (separate path), not GLB instances.
+    if (k === "house") continue;
     const r = buildBuildingsRawFromPrepared(prepared, k);
     if (r) buildings[k] = r;
   }
+  const houseGeom = buildExtrudedFromPrepared(prepared, "house");
 
   const roads: Partial<Record<RoadKind, RoadRaw>> = {};
   for (const k of ROAD_KINDS) {
@@ -648,11 +765,25 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     poisOut[k] = arr;
   }
 
+  // Per-kind sign positions (same packing as POIs).
+  const signsOut = {} as Record<SignKind, Float32Array>;
+  for (const k of SIGN_KINDS) {
+    const nodes = classified.signs[k];
+    const arr = new Float32Array(nodes.length * 2);
+    for (let i = 0; i < nodes.length; i++) {
+      const p = proj.toLocal(nodes[i].lat, nodes[i].lon);
+      arr[i * 2] = p.x;
+      arr[i * 2 + 1] = p.z;
+    }
+    signsOut[k] = arr;
+  }
+
   const out: WorkerOutput = {
-    reqId, buildings, roads, waterArea, trees, peaks,
+    reqId, buildings, houseGeom, roads, waterArea, trees, peaks,
     carRoadCenterlines, tramCenterlines,
     waterCenterlines, waterHalfWidths,
     pois: poisOut,
+    signs: signsOut,
   };
 
   // Collect transferable buffers — zero-copy transfer to main thread.
@@ -669,11 +800,20 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
       waterArea.indices.buffer as ArrayBuffer,
     );
   }
+  if (houseGeom) {
+    transfers.push(
+      houseGeom.positions.buffer as ArrayBuffer,
+      houseGeom.uvs.buffer as ArrayBuffer,
+      houseGeom.normals.buffer as ArrayBuffer,
+      houseGeom.indices.buffer as ArrayBuffer,
+    );
+  }
   for (const cl of carRoadCenterlines) transfers.push(cl.buffer as ArrayBuffer);
   for (const cl of tramCenterlines) transfers.push(cl.buffer as ArrayBuffer);
   for (const cl of waterCenterlines) transfers.push(cl.buffer as ArrayBuffer);
   transfers.push(waterHalfWidths.buffer as ArrayBuffer);
   for (const k of poiKinds) transfers.push(poisOut[k].buffer as ArrayBuffer);
+  for (const k of SIGN_KINDS) transfers.push(signsOut[k].buffer as ArrayBuffer);
 
   (self as unknown as Worker).postMessage(out, transfers);
 };

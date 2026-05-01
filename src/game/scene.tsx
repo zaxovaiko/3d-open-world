@@ -16,6 +16,7 @@ import { AICars } from "./ai-cars";
 import { AITrams } from "./ai-trams";
 import { Grass } from "./grass";
 import { POIs } from "./pois";
+import { RoadSigns } from "./road-signs";
 import { BuildingFleet } from "./buildings-fleet";
 import { Hud } from "../ui/hud";
 
@@ -182,6 +183,7 @@ function World({
       <WorldMeshes built={builtList} />
       <BuildingFleet built={builtList} />
       <POIs built={builtList} />
+      <RoadSigns built={builtList} />
       <AICars built={builtList} playerPosRef={poseRef} />
       <AITrams built={builtList} playerPosRef={poseRef} />
       <Grass built={builtList} playerPosRef={poseRef} />

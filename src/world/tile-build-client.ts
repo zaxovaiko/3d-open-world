@@ -5,6 +5,7 @@ import type { TreeInstance } from "./trees";
 import type { PeakInstance } from "./peaks";
 import TileWorker from "./tile-worker?worker";
 import type { WorkerInput, WorkerOutput, PoiKind } from "./tile-worker";
+import type { SignKind } from "./road-signs";
 
 export type BuildingMesh = {
   aabbs: BuildingAABB[];
@@ -12,6 +13,7 @@ export type BuildingMesh = {
 
 export type Built = {
   buildings: Partial<Record<BuildingKind, BuildingMesh>>;
+  houseGeom: THREE.BufferGeometry | null;
   roads: Partial<Record<RoadKind, THREE.BufferGeometry>>;
   waterArea: THREE.BufferGeometry | null;
   trees: TreeInstance[];
@@ -25,6 +27,8 @@ export type Built = {
   waterHalfWidths: Float32Array;
   // POI positions per kind, flat (x, z) pairs.
   pois: Record<PoiKind, Float32Array>;
+  // Road sign positions per kind, flat (x, z) pairs.
+  signs: Record<SignKind, Float32Array>;
 };
 
 let worker: Worker | null = null;
@@ -150,8 +154,19 @@ export function buildTileInWorker(
       for (const k of Object.keys(out.roads) as RoadKind[]) {
         roads[k] = roadGeometry(out.roads[k]!);
       }
+      let houseGeom: THREE.BufferGeometry | null = null;
+      if (out.houseGeom) {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.BufferAttribute(out.houseGeom.positions, 3));
+        g.setAttribute("uv", new THREE.BufferAttribute(out.houseGeom.uvs, 2));
+        g.setAttribute("normal", new THREE.BufferAttribute(out.houseGeom.normals, 3));
+        g.setIndex(new THREE.BufferAttribute(out.houseGeom.indices, 1));
+        attachSphere(g, out.houseGeom.bsphere);
+        houseGeom = g;
+      }
       const built: Built = {
         buildings,
+        houseGeom,
         roads,
         waterArea: out.waterArea ? roadGeometry(out.waterArea) : null,
         trees: out.trees,
@@ -161,6 +176,7 @@ export function buildTileInWorker(
         waterCenterlines: out.waterCenterlines,
         waterHalfWidths: out.waterHalfWidths,
         pois: out.pois,
+        signs: out.signs,
       };
       touchLRU(cacheKey, built);
       inFlightCache.delete(cacheKey);
