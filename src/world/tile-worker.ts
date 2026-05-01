@@ -379,11 +379,14 @@ const KIND_DEFAULTS: Record<RoadKind, { width: number; y: number; lengthScale: n
   service: { width: 4,  y: 0.13, lengthScale: 6 },
   bike:    { width: 2.2, y: 0.18, lengthScale: 4 },
   bus:     { width: 6,  y: 0.17, lengthScale: 8 },
-  tram:    { width: 3,  y: 0.05, lengthScale: 2 },
+  // Tram sits above all road kinds so rails always draw on top of asphalt.
+  tram:    { width: 3,  y: 0.22, lengthScale: 2 },
   footway: { width: 2,  y: 0.12, lengthScale: 3 },
   river:   { width: 12, y: 0.04, lengthScale: 16 },
 };
 const CAR_LIKE_KINDS = new Set<RoadKind>(["highway", "road", "street", "service", "bus"]);
+// Standard lane width (m). OSM `lanes` tag * this value = drawn road width.
+const LANE_WIDTH_M = 3.5;
 
 function widthFor(kind: RoadKind, w: OsmWay): number {
   const tags = w.tags;
@@ -400,13 +403,16 @@ function widthFor(kind: RoadKind, w: OsmWay): number {
     if (tags?.waterway === "river") return 14;
     return KIND_DEFAULTS.river.width;
   }
-  // Roads: width is determined ONLY by OSM highway class, not by per-way
-  // `lanes` or `width` tags. Adjacent OSM ways representing the same street
-  // often disagree on those tags, which produced visible width steps along
-  // a single street. Forcing a class-based constant keeps a logical road
-  // consistent end to end.
-  if (CAR_LIKE_KINDS.has(kind) && tags?.highway) {
-    return HIGHWAY_WIDTHS[tags.highway] ?? KIND_DEFAULTS[kind].width;
+  // Roads: prefer OSM `lanes` tag — exact lane count drives drawn width.
+  // Falls back to highway-class default when `lanes` is missing or invalid.
+  if (CAR_LIKE_KINDS.has(kind)) {
+    if (tags?.lanes) {
+      const lanes = parseFloat(tags.lanes);
+      if (Number.isFinite(lanes) && lanes > 0) return lanes * LANE_WIDTH_M;
+    }
+    if (tags?.highway) {
+      return HIGHWAY_WIDTHS[tags.highway] ?? KIND_DEFAULTS[kind].width;
+    }
   }
   return KIND_DEFAULTS[kind].width;
 }
@@ -564,6 +570,10 @@ export type WorkerOutput = {
   // AI traffic to follow streets without re-parsing geometry on the main thread.
   carRoadCenterlines: Float32Array[];
   tramCenterlines: Float32Array[];
+  // Water (river/stream/canal) centerlines + parallel half-widths.
+  // Used by the grass system to skip blades over water.
+  waterCenterlines: Float32Array[];
+  waterHalfWidths: Float32Array;
   // Per-kind POI positions. Flat (x, z) pairs per kind. Rendered as
   // InstancedMesh per kind on the main thread using GLB models.
   pois: Record<PoiKind, Float32Array>;
@@ -625,6 +635,26 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   collectCenterlines(classified.roads.service, carRoadCenterlines);
   collectCenterlines(classified.roads.tram, tramCenterlines);
 
+  // Water centerlines + half-widths: per-way half-width derived from the
+  // same widthFor() the visible mesh uses, so the grass mask matches the
+  // rendered river footprint exactly.
+  const waterCenterlines: Float32Array[] = [];
+  const waterHalfWidthsArr: number[] = [];
+  for (const w of classified.roads.river) {
+    const pts = w.geometry;
+    if (pts.length < 2) continue;
+    const projected = pts.map((p) => proj.toLocal(p.lat, p.lon));
+    const smoothed = chaikinSmooth(chaikinSmooth(projected));
+    const arr = new Float32Array(smoothed.length * 2);
+    for (let i = 0; i < smoothed.length; i++) {
+      arr[i * 2] = smoothed[i].x;
+      arr[i * 2 + 1] = smoothed[i].z;
+    }
+    waterCenterlines.push(arr);
+    waterHalfWidthsArr.push(widthFor("river", w) / 2);
+  }
+  const waterHalfWidths = new Float32Array(waterHalfWidthsArr);
+
   // POIs: project each node and pack flat (x, z) pairs per kind.
   const poiKinds: PoiKind[] = ["lamp", "bench", "mailbox", "hydrant", "signpost"];
   const poisOut = {} as Record<PoiKind, Float32Array>;
@@ -640,7 +670,10 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   }
 
   const out: WorkerOutput = {
-    reqId, buildings, roads, trees, peaks, carRoadCenterlines, tramCenterlines, pois: poisOut,
+    reqId, buildings, roads, trees, peaks,
+    carRoadCenterlines, tramCenterlines,
+    waterCenterlines, waterHalfWidths,
+    pois: poisOut,
   };
 
   // Collect transferable buffers — zero-copy transfer to main thread.
@@ -660,6 +693,8 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   }
   for (const cl of carRoadCenterlines) transfers.push(cl.buffer as ArrayBuffer);
   for (const cl of tramCenterlines) transfers.push(cl.buffer as ArrayBuffer);
+  for (const cl of waterCenterlines) transfers.push(cl.buffer as ArrayBuffer);
+  transfers.push(waterHalfWidths.buffer as ArrayBuffer);
   for (const k of poiKinds) transfers.push(poisOut[k].buffer as ArrayBuffer);
 
   (self as unknown as Worker).postMessage(out, transfers);

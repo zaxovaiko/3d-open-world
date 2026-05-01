@@ -95,40 +95,10 @@ export function Grass({ playerPosRef, built }: Props) {
       }
 
       // Mask near each car-road segment within ROAD_HALF_W_M.
-      for (const w of e.data.carRoadCenterlines) {
-        const N = w.length / 2;
-        for (let i = 0; i < N - 1; i++) {
-          const a0 = w[i * 2], a1 = w[i * 2 + 1];
-          const b0 = w[(i + 1) * 2], b1 = w[(i + 1) * 2 + 1];
-          // Segment AABB ± road half-width.
-          const sx0 = Math.min(a0, b0) - ROAD_HALF_W_M;
-          const sx1 = Math.max(a0, b0) + ROAD_HALF_W_M;
-          const sz0 = Math.min(a1, b1) - ROAD_HALF_W_M;
-          const sz1 = Math.max(a1, b1) + ROAD_HALF_W_M;
-          if (sx1 < minX || sx0 > maxX || sz1 < minZ || sz0 > maxZ) continue;
-          const cx0 = Math.max(0, Math.floor(sx0 - minX));
-          const cx1 = Math.min(D - 1, Math.ceil(sx1 - minX));
-          const cz0 = Math.max(0, Math.floor(sz0 - minZ));
-          const cz1 = Math.min(D - 1, Math.ceil(sz1 - minZ));
-          const dx = b0 - a0, dz = b1 - a1;
-          const segLen2 = dx * dx + dz * dz;
-          const r2 = ROAD_HALF_W_M * ROAD_HALF_W_M;
-          for (let cz = cz0; cz <= cz1; cz++) {
-            const wz = cz + minZ + 0.5;
-            for (let cx = cx0; cx <= cx1; cx++) {
-              const idx = cz * D + cx;
-              if (mask[idx]) continue;
-              const wx = cx + minX + 0.5;
-              // Closest point on segment.
-              let t = ((wx - a0) * dx + (wz - a1) * dz) / (segLen2 || 1);
-              if (t < 0) t = 0; else if (t > 1) t = 1;
-              const px2 = a0 + dx * t, pz2 = a1 + dz * t;
-              const ddx = wx - px2, ddz = wz - pz2;
-              if (ddx * ddx + ddz * ddz <= r2) mask[idx] = 1;
-            }
-          }
-        }
-      }
+      maskAlongCenterlines(mask, e.data.carRoadCenterlines, null, ROAD_HALF_W_M, D, minX, minZ, maxX, maxZ);
+
+      // Mask water bodies — per-way half-width from OSM `width` / waterway class.
+      maskAlongCenterlines(mask, e.data.waterCenterlines, e.data.waterHalfWidths, 0, D, minX, minZ, maxX, maxZ);
     }
 
     // Write per-instance matrices, hiding masked cells via a y=-1000 shift.
@@ -192,6 +162,56 @@ export function Grass({ playerPosRef, built }: Props) {
 
 const _zeroScale = new THREE.Vector3(0.0001, 0.0001, 0.0001);
 const _jitterOut = { jx: 0, jz: 0, jr: 0, js: 0 };
+
+// Stamp grid cells within `halfW` (or per-line halfW from `halfWidths`) of every
+// segment of every centerline. Used for both road and water grass masking.
+function maskAlongCenterlines(
+  mask: Uint8Array,
+  lines: Float32Array[],
+  halfWidths: Float32Array | null,
+  halfWConst: number,
+  D: number,
+  minX: number,
+  minZ: number,
+  maxX: number,
+  maxZ: number,
+): void {
+  for (let li = 0; li < lines.length; li++) {
+    const w = lines[li];
+    const halfW = halfWidths ? halfWidths[li] : halfWConst;
+    if (halfW <= 0) continue;
+    const r2 = halfW * halfW;
+    const N = w.length / 2;
+    for (let i = 0; i < N - 1; i++) {
+      const a0 = w[i * 2], a1 = w[i * 2 + 1];
+      const b0 = w[(i + 1) * 2], b1 = w[(i + 1) * 2 + 1];
+      const sx0 = Math.min(a0, b0) - halfW;
+      const sx1 = Math.max(a0, b0) + halfW;
+      const sz0 = Math.min(a1, b1) - halfW;
+      const sz1 = Math.max(a1, b1) + halfW;
+      if (sx1 < minX || sx0 > maxX || sz1 < minZ || sz0 > maxZ) continue;
+      const cx0 = Math.max(0, Math.floor(sx0 - minX));
+      const cx1 = Math.min(D - 1, Math.ceil(sx1 - minX));
+      const cz0 = Math.max(0, Math.floor(sz0 - minZ));
+      const cz1 = Math.min(D - 1, Math.ceil(sz1 - minZ));
+      const dx = b0 - a0, dz = b1 - a1;
+      const segLen2 = dx * dx + dz * dz;
+      for (let cz = cz0; cz <= cz1; cz++) {
+        const wz = cz + minZ + 0.5;
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const idx = cz * D + cx;
+          if (mask[idx]) continue;
+          const wx = cx + minX + 0.5;
+          let t = ((wx - a0) * dx + (wz - a1) * dz) / (segLen2 || 1);
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+          const px2 = a0 + dx * t, pz2 = a1 + dz * t;
+          const ddx = wx - px2, ddz = wz - pz2;
+          if (ddx * ddx + ddz * ddz <= r2) mask[idx] = 1;
+        }
+      }
+    }
+  }
+}
 
 // Deterministic jitter for a given world cell. Writes into `out` to avoid
 // allocating a fresh object per cell (~14400 cells per snap).

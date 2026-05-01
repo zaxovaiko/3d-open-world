@@ -55,11 +55,12 @@ export const ROAD_MAT: Record<RoadKind, THREE.Material> = {
   river: RIVER_MAT,
 };
 
+// Tram is drawn last so rails always overlay roads, even when they share y.
 const ROAD_ORDER: RoadKind[] = [
-  "river", "tram", "footway", "bike", "service", "street", "bus", "road", "highway",
+  "river", "footway", "bike", "service", "street", "bus", "road", "highway", "tram",
 ];
 const ROAD_RENDER: Record<RoadKind, number> = {
-  river: 0, tram: 1, footway: 2, bike: 3, service: 4, street: 5, bus: 6, road: 7, highway: 8,
+  river: 0, footway: 1, bike: 2, service: 3, street: 4, bus: 5, road: 6, highway: 7, tram: 8,
 };
 
 export type BuiltEntry = { key: string; data: Built };
