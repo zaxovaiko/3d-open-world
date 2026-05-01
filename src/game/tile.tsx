@@ -45,9 +45,10 @@ type GroundProps = {
 // from the car. Texture repeat is wide enough that the snap step never
 // reveals a seam.
 export function Ground({ playerPosRef }: GroundProps) {
+  const TEX_REPEAT = 120;
   const tex = useMemo(() => {
     const t = groundTexture();
-    t.repeat.set(120, 120);
+    t.repeat.set(TEX_REPEAT, TEX_REPEAT);
     return t;
   }, []);
   const terrainGeom = useMemo(() => buildTerrainGeometry(TERRAIN_SIZE, TERRAIN_SEGMENTS), []);
@@ -67,6 +68,10 @@ export function Ground({ playerPosRef }: GroundProps) {
     lastSnap.current.z = sz;
     if (visualRef.current) visualRef.current.position.set(sx, 0, sz);
     if (bodyRef.current) bodyRef.current.setNextKinematicTranslation({ x: sx, y: -0.5, z: sz });
+    // Counter the mesh translation in UV space so texture stays world-anchored.
+    const uvPerMeter = TEX_REPEAT / TERRAIN_SIZE;
+    tex.offset.x = (sx * uvPerMeter) % 1;
+    tex.offset.y = (-sz * uvPerMeter) % 1;
   });
 
   return (

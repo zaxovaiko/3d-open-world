@@ -39,6 +39,15 @@ export function Grass({ playerPosRef, built }: Props) {
   const builtVersionRef = useRef(0);
   useEffect(() => { builtVersionRef.current++; }, [built]);
 
+  // Reused per-frame scratch — avoid alloc churn inside useFrame.
+  const maskRef = useRef(new Uint8Array(cellCount));
+  const mat4Ref = useRef(new THREE.Matrix4());
+  const posRef = useRef(new THREE.Vector3());
+  const quatRef = useRef(new THREE.Quaternion());
+  const sclRef = useRef(new THREE.Vector3());
+  const yAxisRef = useRef(new THREE.Vector3(0, 1, 0));
+  const hiddenRef = useRef(new THREE.Vector3(0, -1000, 0));
+
   useFrame(() => {
     const m = ref.current;
     if (!m) return;
@@ -57,8 +66,9 @@ export function Grass({ playerPosRef, built }: Props) {
     lastOrigin.current.z = oz;
     lastOrigin.current.builtVersion = bv;
 
-    // Build occupancy mask for the patch — Uint8Array, 1 byte per cell.
-    const mask = new Uint8Array(cellCount);
+    // Build occupancy mask for the patch — reused across frames, zeroed first.
+    const mask = maskRef.current;
+    mask.fill(0);
     const minX = ox - RADIUS_M;
     const minZ = oz - RADIUS_M;
     const maxX = ox + RADIUS_M;
@@ -122,12 +132,12 @@ export function Grass({ playerPosRef, built }: Props) {
     }
 
     // Write per-instance matrices, hiding masked cells via a y=-1000 shift.
-    const mat4 = new THREE.Matrix4();
-    const pos = new THREE.Vector3();
-    const quat = new THREE.Quaternion();
-    const scl = new THREE.Vector3();
-    const yAxis = new THREE.Vector3(0, 1, 0);
-    const hidden = new THREE.Vector3(0, -1000, 0);
+    const mat4 = mat4Ref.current;
+    const pos = posRef.current;
+    const quat = quatRef.current;
+    const scl = sclRef.current;
+    const yAxis = yAxisRef.current;
+    const hidden = hiddenRef.current;
     // Ring-buffer mapping: each instance owns a slot (instanceX, instanceZ)
     // in the patch grid. Its world cell is the unique cell within the patch
     // whose world coords satisfy `cell ≡ (instanceX, instanceZ) (mod D)`.
@@ -151,10 +161,10 @@ export function Grass({ playerPosRef, built }: Props) {
         if (mask[idx]) {
           mat4.compose(hidden, quat, _zeroScale);
         } else {
-          const j = cellJitter(wx, wz);
-          pos.set(wx + j.jx, BLADE_H / 2, wz + j.jz);
-          quat.setFromAxisAngle(yAxis, j.jr);
-          const s = j.js;
+          cellJitter(wx, wz, _jitterOut);
+          pos.set(wx + _jitterOut.jx, BLADE_H / 2, wz + _jitterOut.jz);
+          quat.setFromAxisAngle(yAxis, _jitterOut.jr);
+          const s = _jitterOut.js;
           scl.set(s, s, s);
           mat4.compose(pos, quat, scl);
         }
@@ -181,25 +191,19 @@ export function Grass({ playerPosRef, built }: Props) {
 }
 
 const _zeroScale = new THREE.Vector3(0.0001, 0.0001, 0.0001);
+const _jitterOut = { jx: 0, jz: 0, jr: 0, js: 0 };
 
-// Deterministic jitter for a given world cell. Reused across frames so the
-// same world cell renders the same blade every time the player passes it.
-function cellJitter(wx: number, wz: number): { jx: number; jz: number; jr: number; js: number } {
-  // Hash to four pseudo-random floats in [0,1).
+// Deterministic jitter for a given world cell. Writes into `out` to avoid
+// allocating a fresh object per cell (~14400 cells per snap).
+function cellJitter(wx: number, wz: number, out: { jx: number; jz: number; jr: number; js: number }): void {
   const h1 = Math.abs(Math.sin(wx * 12.9898 + wz * 78.233) * 43758.5453);
   const h2 = Math.abs(Math.sin(wx * 39.346 + wz * 11.135) * 24634.6345);
   const h3 = Math.abs(Math.sin(wx * 91.123 + wz * 47.241) * 17231.2341);
   const h4 = Math.abs(Math.sin(wx * 27.619 + wz * 58.391) * 39581.7251);
-  const f1 = h1 - Math.floor(h1);
-  const f2 = h2 - Math.floor(h2);
-  const f3 = h3 - Math.floor(h3);
-  const f4 = h4 - Math.floor(h4);
-  return {
-    jx: f1,
-    jz: f2,
-    jr: f3 * Math.PI * 2,
-    js: 0.7 + f4 * 0.6,
-  };
+  out.jx = h1 - Math.floor(h1);
+  out.jz = h2 - Math.floor(h2);
+  out.jr = (h3 - Math.floor(h3)) * Math.PI * 2;
+  out.js = 0.7 + (h4 - Math.floor(h4)) * 0.6;
 }
 
 function makeGrassMaterial(): THREE.Material {

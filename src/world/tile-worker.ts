@@ -244,25 +244,44 @@ function edgeKey(ax: number, az: number, bx: number, bz: number): string {
 }
 
 type Occlusion = {
-  // Edges shared exactly with another building (1cm quantization). Both
-  // sides drop the wall — provably interior to whichever side touches.
-  sharedEdges: Set<string>;
+  // Per-edge sorted heights of all buildings sharing that edge.
+  // A wall is dropped only when a neighbor on its edge is at least as tall —
+  // otherwise the upper portion of a tall wall above a short neighbor's roof
+  // would vanish.
+  edgeHeights: Map<string, number[]>;
 };
 
 function computeOcclusion(prepared: PreparedBuilding[]): Occlusion {
-  const edgeCount = new Map<string, number>();
-  for (let i = 0; i < prepared.length; i++) {
-    const ring = prepared[i].ring;
+  const edgeHeights = new Map<string, number[]>();
+  for (const b of prepared) {
+    const ring = b.ring;
     for (let k = 0; k < ring.length; k++) {
       const p = ring[k];
       const q = ring[(k + 1) % ring.length];
       const key = edgeKey(p.x, p.z, q.x, q.z);
-      edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1);
+      const list = edgeHeights.get(key);
+      if (list) list.push(b.h);
+      else edgeHeights.set(key, [b.h]);
     }
   }
-  const sharedEdges = new Set<string>();
-  for (const [k, c] of edgeCount) if (c > 1) sharedEdges.add(k);
-  return { sharedEdges };
+  return { edgeHeights };
+}
+
+// Max height among buildings on `key` excluding one occurrence of `selfH`.
+// Returns -Infinity when no neighbor exists.
+function maxNeighborHeight(occ: Occlusion, key: string, selfH: number): number {
+  const list = occ.edgeHeights.get(key);
+  if (!list || list.length < 2) return -Infinity;
+  let max = -Infinity;
+  let removedSelf = false;
+  for (const h of list) {
+    if (!removedSelf && Math.abs(h - selfH) < 1e-6) {
+      removedSelf = true;
+      continue;
+    }
+    if (h > max) max = h;
+  }
+  return max;
 }
 
 // Build per-kind raw geometry. Walls hidden by neighbor polygons skipped.
@@ -307,11 +326,11 @@ function buildBuildingsRawFromPrepared(
       const v1 = h / WINDOW_H_M;
       perim += len;
 
-      // Drop only walls we can prove are interior partitions: edges shared
-      // exactly (1cm quantization) with another building. Point-in-polygon
-      // on a midpoint sample false-positives on non-convex neighbours and
-      // grazing AABB overlaps, so it is no longer applied.
-      if (occ.sharedEdges.has(edgeKey(ax, az, bx, bz))) continue;
+      // Drop wall only if a neighbor sharing this edge is at least as tall —
+      // otherwise the visible upper portion of this wall (above the shorter
+      // neighbor's roof) would disappear.
+      const ek = edgeKey(ax, az, bx, bz);
+      if (maxNeighborHeight(occ, ek, h) >= h - 1e-3) continue;
 
       positions.push(ax, 0, az); uvs.push(u0, 0);
       positions.push(bx, 0, bz); uvs.push(u1, 0);

@@ -32,6 +32,7 @@ for (const v of GLB_VARIANTS) useGLTF.preload(v.url);
 type AIState = {
   body: RapierRigidBody | null;
   way: Float32Array | null;
+  prefix: Float32Array | null;
   segIdx: number;
   t: number;
   arc: number;
@@ -43,10 +44,16 @@ type Props = {
 };
 
 export function AICars({ built, playerPosRef }: Props) {
-  const { ways, lens, endpointMap } = useMemo(() => {
+  const { ways, lens, prefixByWay, endpointMap } = useMemo(() => {
     const out: Float32Array[] = [];
     for (const e of built) for (const w of e.data.carRoadCenterlines) out.push(w);
-    const lengths = out.map(wayLength);
+    const prefByWay = new Map<Float32Array, Float32Array>();
+    const lengths = new Array<number>(out.length);
+    for (let i = 0; i < out.length; i++) {
+      const pre = prefixLengths(out[i]);
+      prefByWay.set(out[i], pre);
+      lengths[i] = pre[pre.length - 1] ?? 0;
+    }
 
     const map = new Map<string, Array<{ way: Float32Array; atStart: boolean }>>();
     for (const w of out) {
@@ -59,23 +66,27 @@ export function AICars({ built, playerPosRef }: Props) {
       if (!map.has(ek)) map.set(ek, []);
       map.get(ek)!.push({ way: w, atStart: false });
     }
-    return { ways: out, lens: lengths, endpointMap: map };
+    return { ways: out, lens: lengths, prefixByWay: prefByWay, endpointMap: map };
   }, [built]);
 
   const waysRef = useRef(ways);
   const lensRef = useRef(lens);
+  const prefixByWayRef = useRef(prefixByWay);
   const endpointMapRef = useRef(endpointMap);
   const reversedCacheRef = useRef(new WeakMap<Float32Array, Float32Array>());
 
   useEffect(() => {
     waysRef.current = ways;
     lensRef.current = lens;
+    prefixByWayRef.current = prefixByWay;
     endpointMapRef.current = endpointMap;
-  }, [ways, lens, endpointMap]);
+  }, [ways, lens, prefixByWay, endpointMap]);
 
   const carsRef = useRef<AIState[]>(
-    Array.from({ length: COUNT }, () => ({ body: null, way: null, segIdx: 0, t: 0, arc: 0 })),
+    Array.from({ length: COUNT }, () => ({ body: null, way: null, prefix: null, segIdx: 0, t: 0, arc: 0 })),
   );
+
+  const byWayRef = useRef(new Map<Float32Array, AIState[]>());
 
   const tmpQ = useMemo(() => new THREE.Quaternion(), []);
   const tmpAxis = useMemo(() => new THREE.Vector3(0, 1, 0), []);
@@ -87,23 +98,33 @@ export function AICars({ built, playerPosRef }: Props) {
     const player = playerPosRef.current?.pos;
     const px = player?.x ?? 0, pz = player?.z ?? 0;
 
+    const byWay = byWayRef.current;
+    byWay.clear();
     for (const c of cars) {
-      if (c.way) c.arc = arcLength(c.way, c.segIdx, c.t);
+      if (!c.way || !c.prefix) continue;
+      const dx = c.way[(c.segIdx + 1) * 2] - c.way[c.segIdx * 2];
+      const dz = c.way[(c.segIdx + 1) * 2 + 1] - c.way[c.segIdx * 2 + 1];
+      c.arc = c.prefix[c.segIdx] + Math.sqrt(dx * dx + dz * dz) * c.t;
+      let list = byWay.get(c.way);
+      if (!list) { list = []; byWay.set(c.way, list); }
+      list.push(c);
     }
 
     for (const c of cars) {
       if (!c.body) continue;
       const tr = c.body.translation();
-      const distToPlayer = Math.hypot(tr.x - px, tr.z - pz);
+      const ddx = tr.x - px, ddz = tr.z - pz;
+      const distToPlayer = Math.sqrt(ddx * ddx + ddz * ddz);
 
       if (!c.way || distToPlayer > DESPAWN_RADIUS) {
         const slot = findSpawnSlot(ws, lensRef.current, cars, c, px, pz, SPAWN_RADIUS);
         if (!slot) {
           c.way = null;
+          c.prefix = null;
           c.body.setNextKinematicTranslation({ x: tr.x, y: HIDDEN_Y, z: tr.z });
           continue;
         }
-        applySpawn(c, slot.way, slot.segIdx, slot.t);
+        applySpawn(c, slot.way, prefixByWayRef.current.get(slot.way) ?? null, slot.segIdx, slot.t);
         const w = slot.way;
         const ax = w[c.segIdx * 2], az = w[c.segIdx * 2 + 1];
         const bx = w[(c.segIdx + 1) * 2], bz = w[(c.segIdx + 1) * 2 + 1];
@@ -114,10 +135,13 @@ export function AICars({ built, playerPosRef }: Props) {
       }
 
       let aheadGap = Infinity;
-      for (const o of cars) {
-        if (o === c || o.way !== c.way) continue;
-        const gap = o.arc - c.arc;
-        if (gap > 0 && gap < aheadGap) aheadGap = gap;
+      const sameWay = byWay.get(c.way);
+      if (sameWay) {
+        for (const o of sameWay) {
+          if (o === c) continue;
+          const gap = o.arc - c.arc;
+          if (gap > 0 && gap < aheadGap) aheadGap = gap;
+        }
       }
       let speed = SPEED;
       if (aheadGap < SLOW_GAP_M) {
@@ -129,7 +153,8 @@ export function AICars({ built, playerPosRef }: Props) {
       const N = w.length / 2;
       const ax = w[c.segIdx * 2], az = w[c.segIdx * 2 + 1];
       const bx = w[(c.segIdx + 1) * 2], bz = w[(c.segIdx + 1) * 2 + 1];
-      const segLen = Math.hypot(bx - ax, bz - az) || 1;
+      const sdx = bx - ax, sdz = bz - az;
+      const segLen = Math.sqrt(sdx * sdx + sdz * sdz) || 1;
       c.t += (speed * dt) / segLen;
       while (c.t >= 1 && c.segIdx < N - 2) {
         c.t -= 1;
@@ -140,10 +165,16 @@ export function AICars({ built, playerPosRef }: Props) {
         const lx = w[(N - 1) * 2], lz = w[(N - 1) * 2 + 1];
         const next = pickConnectedWay(endpointMapRef.current, w, lx, lz, reversedCacheRef.current);
         if (next) {
-          applySpawn(c, next, 0, 0);
+          let nextPrefix = prefixByWayRef.current.get(next);
+          if (!nextPrefix) {
+            nextPrefix = prefixLengths(next);
+            prefixByWayRef.current.set(next, nextPrefix);
+          }
+          applySpawn(c, next, nextPrefix, 0, 0);
           continue;
         }
         c.way = null;
+        c.prefix = null;
         continue;
       }
 
@@ -218,11 +249,18 @@ function AICarBody({
   );
 }
 
-function applySpawn(c: AIState, way: Float32Array, segIdx: number, t: number) {
+function applySpawn(c: AIState, way: Float32Array, prefix: Float32Array | null, segIdx: number, t: number) {
   c.way = way;
+  c.prefix = prefix;
   c.segIdx = segIdx;
   c.t = t;
-  c.arc = arcLength(way, segIdx, t);
+  if (prefix) {
+    const dx = way[(segIdx + 1) * 2] - way[segIdx * 2];
+    const dz = way[(segIdx + 1) * 2 + 1] - way[segIdx * 2 + 1];
+    c.arc = prefix[segIdx] + Math.sqrt(dx * dx + dz * dz) * t;
+  } else {
+    c.arc = 0;
+  }
 }
 
 function endKey(x: number, z: number): string {
@@ -260,27 +298,15 @@ function reverseWay(w: Float32Array): Float32Array {
   return out;
 }
 
-function wayLength(w: Float32Array): number {
-  let total = 0;
-  for (let i = 0; i < w.length / 2 - 1; i++) {
-    const dx = w[(i + 1) * 2] - w[i * 2];
-    const dz = w[(i + 1) * 2 + 1] - w[i * 2 + 1];
-    total += Math.hypot(dx, dz);
+function prefixLengths(w: Float32Array): Float32Array {
+  const N = w.length / 2;
+  const pre = new Float32Array(N);
+  for (let i = 1; i < N; i++) {
+    const dx = w[i * 2] - w[(i - 1) * 2];
+    const dz = w[i * 2 + 1] - w[(i - 1) * 2 + 1];
+    pre[i] = pre[i - 1] + Math.sqrt(dx * dx + dz * dz);
   }
-  return total;
-}
-
-function arcLength(w: Float32Array, segIdx: number, t: number): number {
-  let total = 0;
-  for (let i = 0; i < segIdx; i++) {
-    const dx = w[(i + 1) * 2] - w[i * 2];
-    const dz = w[(i + 1) * 2 + 1] - w[i * 2 + 1];
-    total += Math.hypot(dx, dz);
-  }
-  const dx = w[(segIdx + 1) * 2] - w[segIdx * 2];
-  const dz = w[(segIdx + 1) * 2 + 1] - w[segIdx * 2 + 1];
-  total += Math.hypot(dx, dz) * t;
-  return total;
+  return pre;
 }
 
 function findSpawnSlot(
@@ -330,7 +356,7 @@ function arcToSegment(w: Float32Array, target: number): { segIdx: number; t: num
   for (let i = 0; i < N - 1; i++) {
     const dx = w[(i + 1) * 2] - w[i * 2];
     const dz = w[(i + 1) * 2 + 1] - w[i * 2 + 1];
-    const len = Math.hypot(dx, dz) || 1;
+    const len = Math.sqrt(dx * dx + dz * dz) || 1;
     if (acc + len >= target) {
       return { segIdx: i, t: (target - acc) / len };
     }

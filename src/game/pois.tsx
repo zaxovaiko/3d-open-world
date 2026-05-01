@@ -81,16 +81,16 @@ function KindPOIs({ kind, built }: { kind: PoiKind; built: BuiltEntry[] }) {
   }, [gltf.scene, cfg]);
 
   // Aggregate instance positions across all loaded tiles for this kind.
+  // Flat (x, z) pairs to avoid per-POI object allocation on every tile change.
   const positions = useMemo(() => {
     let total = 0;
-    for (const e of built) total += e.data.pois[kind].length / 2;
-    const pts: Array<{ x: number; z: number }> = new Array(total);
-    let i = 0;
+    for (const e of built) total += e.data.pois[kind].length;
+    const pts = new Float32Array(total);
+    let off = 0;
     for (const e of built) {
       const arr = e.data.pois[kind];
-      for (let k = 0; k < arr.length; k += 2) {
-        pts[i++] = { x: arr[k], z: arr[k + 1] };
-      }
+      pts.set(arr, off);
+      off += arr.length;
     }
     return pts;
   }, [built, kind]);
@@ -122,18 +122,19 @@ function SubInstanced({
   randomYaw,
 }: {
   sub: SubMesh;
-  positions: Array<{ x: number; z: number }>;
+  positions: Float32Array;
   baseScale: number;
   baseY: number;
   randomYaw: boolean;
 }) {
   const ref = useRef<THREE.InstancedMesh>(null);
   const capRef = useRef(0);
+  const count = positions.length / 2;
   const cap = useMemo(() => {
-    const next = Math.max(capRef.current, positions.length);
+    const next = Math.max(capRef.current, count);
     capRef.current = next;
     return next;
-  }, [positions.length]);
+  }, [count]);
 
   useEffect(() => {
     const m = ref.current;
@@ -142,11 +143,13 @@ function SubInstanced({
     const pos = new THREE.Vector3();
     const quat = new THREE.Quaternion();
     const scl = new THREE.Vector3(baseScale, baseScale, baseScale);
-    for (let i = 0; i < positions.length; i++) {
-      const p = positions[i];
-      pos.set(p.x, baseY * baseScale, p.z);
+    const y = baseY * baseScale;
+    for (let i = 0; i < count; i++) {
+      const x = positions[i * 2];
+      const z = positions[i * 2 + 1];
+      pos.set(x, y, z);
       if (randomYaw) {
-        const r = Math.sin(p.x * 12.9898 + p.z * 78.233) * 43758.5453;
+        const r = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
         const yaw = (r - Math.floor(r)) * Math.PI * 2;
         quat.setFromAxisAngle(_yAxis, yaw);
       } else {
@@ -155,9 +158,9 @@ function SubInstanced({
       mat4.compose(pos, quat, scl);
       m.setMatrixAt(i, mat4);
     }
-    m.count = positions.length;
+    m.count = count;
     m.instanceMatrix.needsUpdate = true;
-  }, [positions, baseScale, baseY, randomYaw]);
+  }, [positions, count, baseScale, baseY, randomYaw]);
 
   if (cap === 0) return null;
   return (
