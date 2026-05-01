@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { BUILDING_MAT, ROAD_MAT } from "./world-meshes";
+import { ROAD_MAT } from "./world-meshes";
 
 // Pre-link shaders + upload textures at Scene mount. Without this, the first
 // new tile that uses each material triggers GLSL compile + first GPU texture
@@ -24,9 +24,6 @@ export function Prewarm() {
     geom.setIndex(new THREE.BufferAttribute(new Uint16Array([0, 1, 2]), 1));
 
     const meshes: THREE.Mesh[] = [];
-    for (const k of Object.keys(BUILDING_MAT) as Array<keyof typeof BUILDING_MAT>) {
-      meshes.push(new THREE.Mesh(geom, BUILDING_MAT[k]));
-    }
     for (const k of Object.keys(ROAD_MAT) as Array<keyof typeof ROAD_MAT>) {
       meshes.push(new THREE.Mesh(geom, ROAD_MAT[k]));
     }

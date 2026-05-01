@@ -1,5 +1,4 @@
 /// <reference lib="webworker" />
-import * as THREE from "three";
 import type { OsmNode, OsmWay, OverpassResponse, RoadKind } from "../types";
 import { makeProjector, type Projector } from "./project";
 import {
@@ -36,33 +35,6 @@ function computeSphere(positions: Float32Array): BSphere {
     if (d2 > r2) r2 = d2;
   }
   return { cx, cy, cz, radius: Math.sqrt(r2) };
-}
-
-// Per-vertex normals from indexed triangles (mirrors THREE.BufferGeometry.computeVertexNormals).
-function computeNormalsIndexed(positions: Float32Array, indices: Uint32Array): Float32Array {
-  const normals = new Float32Array(positions.length);
-  for (let i = 0; i < indices.length; i += 3) {
-    const ia = indices[i] * 3, ib = indices[i + 1] * 3, ic = indices[i + 2] * 3;
-    const ax = positions[ia], ay = positions[ia + 1], az = positions[ia + 2];
-    const bx = positions[ib], by = positions[ib + 1], bz = positions[ib + 2];
-    const cx = positions[ic], cy = positions[ic + 1], cz = positions[ic + 2];
-    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
-    const nx = e1y * e2z - e1z * e2y;
-    const ny = e1z * e2x - e1x * e2z;
-    const nz = e1x * e2y - e1y * e2x;
-    normals[ia] += nx; normals[ia + 1] += ny; normals[ia + 2] += nz;
-    normals[ib] += nx; normals[ib + 1] += ny; normals[ib + 2] += nz;
-    normals[ic] += nx; normals[ic + 1] += ny; normals[ic + 2] += nz;
-  }
-  for (let i = 0; i < normals.length; i += 3) {
-    const x = normals[i], y = normals[i + 1], z = normals[i + 2];
-    const l = Math.hypot(x, y, z) || 1;
-    normals[i] = x / l;
-    normals[i + 1] = y / l;
-    normals[i + 2] = z / l;
-  }
-  return normals;
 }
 
 // --- Overpass classification (mirrors what fetchTile used to do on main thread) ---
@@ -140,10 +112,6 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
 // --- Building build (typed arrays) ---
 
 const DEFAULT_HEIGHT = 8;
-// Texture repeat in metres. Hi-res textures ship with an 8×10 window grid,
-// so 8m × 30m per repeat keeps individual windows ~1m wide × ~3m tall.
-const WINDOW_W_M = 8;
-const WINDOW_H_M = 30;
 
 type Pt = { x: number; z: number };
 
@@ -170,23 +138,16 @@ function signedArea(ring: Pt[]): number {
   return a / 2;
 }
 
+// Per-kind AABB list. Buildings are rendered as instanced GLB models on the
+// main thread, sized + positioned from these AABBs — no per-tile geometry
+// transferred from the worker.
 type BuildingRaw = {
-  positions: Float32Array;
-  uvs: Float32Array;
-  normals: Float32Array;
-  indices: Uint32Array;
-  bsphere: BSphere;
-  count: number;
   aabbs: BuildingAABB[];
 };
 
 type PreparedBuilding = {
   kind: BuildingKind;
-  ring: Pt[];
-  h: number;
-  tris: number[][];
   aabb: BuildingAABB;
-  bb: { minX: number; maxX: number; minZ: number; maxZ: number };
 };
 
 function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): PreparedBuilding | null {
@@ -197,13 +158,10 @@ function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): Prepar
   const raw = closed ? pts.slice(0, -1) : pts;
   if (raw.length < 3) return null;
 
-  let ring: Pt[] = raw.map((p) => proj.toLocal(p.lat, p.lon));
-  const area = signedArea(ring);
-  if (Math.abs(area) < 1) return null;
-  if (area < 0) ring = ring.slice().reverse();
+  const ring: Pt[] = raw.map((p) => proj.toLocal(p.lat, p.lon));
+  if (Math.abs(signedArea(ring)) < 1) return null;
 
   const h = parseHeight(w.tags);
-
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (const p of ring) {
     if (p.x < minX) minX = p.x;
@@ -211,17 +169,8 @@ function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): Prepar
     if (p.z < minZ) minZ = p.z;
     if (p.z > maxZ) maxZ = p.z;
   }
-
-  const verts2d = ring.map((p) => new THREE.Vector2(p.x, p.z));
-  const tris = THREE.ShapeUtils.triangulateShape(verts2d, []);
-  if (!tris.length) return null;
-
   return {
     kind,
-    ring,
-    h,
-    tris,
-    bb: { minX, maxX, minZ, maxZ },
     aabb: {
       cx: (minX + maxX) / 2,
       cy: h / 2,
@@ -233,128 +182,17 @@ function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): Prepar
   };
 }
 
-// 1cm quantization → exact-shared edges hash to same key regardless of
-// vertex order.
-function edgeKey(ax: number, az: number, bx: number, bz: number): string {
-  const q = 100;
-  const a0 = Math.round(ax * q), a1 = Math.round(az * q);
-  const b0 = Math.round(bx * q), b1 = Math.round(bz * q);
-  if (a0 < b0 || (a0 === b0 && a1 < b1)) return `${a0},${a1}|${b0},${b1}`;
-  return `${b0},${b1}|${a0},${a1}`;
-}
-
-type Occlusion = {
-  // Per-edge sorted heights of all buildings sharing that edge.
-  // A wall is dropped only when a neighbor on its edge is at least as tall —
-  // otherwise the upper portion of a tall wall above a short neighbor's roof
-  // would vanish.
-  edgeHeights: Map<string, number[]>;
-};
-
-function computeOcclusion(prepared: PreparedBuilding[]): Occlusion {
-  const edgeHeights = new Map<string, number[]>();
-  for (const b of prepared) {
-    const ring = b.ring;
-    for (let k = 0; k < ring.length; k++) {
-      const p = ring[k];
-      const q = ring[(k + 1) % ring.length];
-      const key = edgeKey(p.x, p.z, q.x, q.z);
-      const list = edgeHeights.get(key);
-      if (list) list.push(b.h);
-      else edgeHeights.set(key, [b.h]);
-    }
-  }
-  return { edgeHeights };
-}
-
-// Max height among buildings on `key` excluding one occurrence of `selfH`.
-// Returns -Infinity when no neighbor exists.
-function maxNeighborHeight(occ: Occlusion, key: string, selfH: number): number {
-  const list = occ.edgeHeights.get(key);
-  if (!list || list.length < 2) return -Infinity;
-  let max = -Infinity;
-  let removedSelf = false;
-  for (const h of list) {
-    if (!removedSelf && Math.abs(h - selfH) < 1e-6) {
-      removedSelf = true;
-      continue;
-    }
-    if (h > max) max = h;
-  }
-  return max;
-}
-
-// Build per-kind raw geometry. Walls hidden by neighbor polygons skipped.
 function buildBuildingsRawFromPrepared(
   prepared: PreparedBuilding[],
-  occ: Occlusion,
   kind: BuildingKind,
 ): BuildingRaw | null {
-  const positions: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = [];
   const aabbs: BuildingAABB[] = [];
-  let baseV = 0;
-  let count = 0;
-
   for (let bi = 0; bi < prepared.length; bi++) {
     const b = prepared[bi];
     if (b.kind !== kind) continue;
-    const { ring, h, tris, aabb } = b;
-    const N = ring.length;
-    aabbs.push(aabb);
-
-    // Roof.
-    for (let i = 0; i < N; i++) {
-      positions.push(ring[i].x, h, ring[i].z);
-      uvs.push(ring[i].x / WINDOW_W_M, ring[i].z / WINDOW_W_M);
-    }
-    for (const [a, b, c] of tris) {
-      // CCW shape (x,z) → +y normal for roof when read as (a,b,c).
-      indices.push(baseV + a, baseV + b, baseV + c);
-    }
-    baseV += N;
-
-    let perim = 0;
-    for (let i = 0; i < N; i++) {
-      const j = (i + 1) % N;
-      const ax = ring[i].x, az = ring[i].z;
-      const bx = ring[j].x, bz = ring[j].z;
-      const len = Math.hypot(bx - ax, bz - az);
-      const u0 = perim / WINDOW_W_M;
-      const u1 = (perim + len) / WINDOW_W_M;
-      const v1 = h / WINDOW_H_M;
-      perim += len;
-
-      // Drop wall only if a neighbor sharing this edge is at least as tall —
-      // otherwise the visible upper portion of this wall (above the shorter
-      // neighbor's roof) would disappear.
-      const ek = edgeKey(ax, az, bx, bz);
-      if (maxNeighborHeight(occ, ek, h) >= h - 1e-3) continue;
-
-      positions.push(ax, 0, az); uvs.push(u0, 0);
-      positions.push(bx, 0, bz); uvs.push(u1, 0);
-      positions.push(bx, h, bz); uvs.push(u1, v1);
-      positions.push(ax, h, az); uvs.push(u0, v1);
-      // Outward winding: faces away from polygon interior (CCW ring).
-      indices.push(baseV, baseV + 2, baseV + 1, baseV, baseV + 3, baseV + 2);
-      baseV += 4;
-    }
-    count++;
+    aabbs.push(b.aabb);
   }
-
-  if (!positions.length) return null;
-  const pos = new Float32Array(positions);
-  const idx = new Uint32Array(indices);
-  return {
-    positions: pos,
-    uvs: new Float32Array(uvs),
-    normals: computeNormalsIndexed(pos, idx),
-    indices: idx,
-    bsphere: computeSphere(pos),
-    count,
-    aabbs,
-  };
+  return aabbs.length ? { aabbs } : null;
 }
 
 // --- Road build (typed arrays) ---
@@ -596,17 +434,17 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   // Classify Overpass elements (was on main thread in fetchTile).
   const classified = classifyElements(data);
 
-  // Prepare every building once so wall-occlusion can test across kinds.
+  // Project + classify each building footprint into an AABB. The AABB drives
+  // GLB instance placement on the main thread (scale + position).
   const prepared: PreparedBuilding[] = [];
   for (const w of classified.buildings) {
     const kind = _classifyBuilding(w.tags);
     const p = prepareBuilding(w, kind, proj);
     if (p) prepared.push(p);
   }
-  const occ = computeOcclusion(prepared);
   const buildings: Partial<Record<BuildingKind, BuildingRaw>> = {};
   for (const k of BUILDING_KINDS) {
-    const r = buildBuildingsRawFromPrepared(prepared, occ, k);
+    const r = buildBuildingsRawFromPrepared(prepared, k);
     if (r) buildings[k] = r;
   }
 
@@ -687,16 +525,8 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   };
 
   // Collect transferable buffers — zero-copy transfer to main thread.
+  // Buildings ship as plain AABB structs (no typed arrays), so nothing to transfer.
   const transfers: Transferable[] = [];
-  for (const k of Object.keys(buildings) as BuildingKind[]) {
-    const r = buildings[k]!;
-    transfers.push(
-      r.positions.buffer as ArrayBuffer,
-      r.uvs.buffer as ArrayBuffer,
-      r.normals.buffer as ArrayBuffer,
-      r.indices.buffer as ArrayBuffer,
-    );
-  }
   for (const k of Object.keys(roads) as RoadKind[]) {
     const r = roads[k]!;
     transfers.push(r.positions.buffer as ArrayBuffer, r.uvs.buffer as ArrayBuffer, r.indices.buffer as ArrayBuffer);

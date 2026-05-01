@@ -7,8 +7,6 @@ import TileWorker from "./tile-worker?worker";
 import type { WorkerInput, WorkerOutput, PoiKind } from "./tile-worker";
 
 export type BuildingMesh = {
-  geometry: THREE.BufferGeometry;
-  count: number;
   aabbs: BuildingAABB[];
 };
 
@@ -87,14 +85,7 @@ function getWorker(): Worker {
 }
 
 // Wire pre-computed worker buffers into a BufferGeometry. No CPU math here —
-// normals + bounding sphere come from the worker.
-type RawNormals = {
-  positions: Float32Array;
-  uvs: Float32Array;
-  indices: Uint32Array;
-  normals: Float32Array;
-  bsphere: { cx: number; cy: number; cz: number; radius: number };
-};
+// bounding sphere comes from the worker.
 type RawNoNormals = {
   positions: Float32Array;
   uvs: Float32Array;
@@ -104,16 +95,6 @@ type RawNoNormals = {
 
 function attachSphere(g: THREE.BufferGeometry, bs: RawNoNormals["bsphere"]) {
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3(bs.cx, bs.cy, bs.cz), bs.radius);
-}
-
-function buildingGeometry(raw: RawNormals): THREE.BufferGeometry {
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.BufferAttribute(raw.positions, 3));
-  g.setAttribute("uv", new THREE.BufferAttribute(raw.uvs, 2));
-  g.setAttribute("normal", new THREE.BufferAttribute(raw.normals, 3));
-  g.setIndex(new THREE.BufferAttribute(raw.indices, 1));
-  attachSphere(g, raw.bsphere);
-  return g;
 }
 
 function roadGeometry(raw: RawNoNormals): THREE.BufferGeometry {
@@ -162,12 +143,7 @@ export function buildTileInWorker(
     pending.set(reqId, (out) => {
       const buildings: Partial<Record<BuildingKind, BuildingMesh>> = {};
       for (const k of Object.keys(out.buildings) as BuildingKind[]) {
-        const r = out.buildings[k]!;
-        buildings[k] = {
-          geometry: buildingGeometry(r),
-          count: r.count,
-          aabbs: r.aabbs,
-        };
+        buildings[k] = { aabbs: out.buildings[k]!.aabbs };
       }
       const roads: Partial<Record<RoadKind, THREE.BufferGeometry>> = {};
       for (const k of Object.keys(out.roads) as RoadKind[]) {

@@ -2,13 +2,11 @@ import { useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { RoadKind } from "../types";
-import { BUILDING_KINDS, type BuildingKind } from "../world/buildings-shared";
 import type { Built } from "../world/tile-build-client";
 import type { TreeInstance, TreeKind } from "../world/trees";
 import { TreeFleet } from "./tree-fleet";
 import {
   bikeTexture,
-  buildingKindTexture,
   busTexture,
   footwayTexture,
   highwayTexture,
@@ -18,20 +16,6 @@ import {
   tramTexture,
   waterTexture,
 } from "../world/textures";
-
-export const BUILDING_MAT: Record<BuildingKind, THREE.Material> = {
-  house:       new THREE.MeshLambertMaterial({ map: buildingKindTexture("house") }),
-  apartments:  new THREE.MeshLambertMaterial({ map: buildingKindTexture("apartments") }),
-  office:      new THREE.MeshLambertMaterial({ map: buildingKindTexture("office") }),
-  retail:      new THREE.MeshLambertMaterial({ map: buildingKindTexture("retail") }),
-  industrial:  new THREE.MeshLambertMaterial({ map: buildingKindTexture("industrial") }),
-  warehouse:   new THREE.MeshLambertMaterial({ map: buildingKindTexture("warehouse") }),
-  school:      new THREE.MeshLambertMaterial({ map: buildingKindTexture("school") }),
-  hospital:    new THREE.MeshLambertMaterial({ map: buildingKindTexture("hospital") }),
-  religious:   new THREE.MeshLambertMaterial({ map: buildingKindTexture("religious") }),
-  civic:       new THREE.MeshLambertMaterial({ map: buildingKindTexture("civic") }),
-  generic:     new THREE.MeshLambertMaterial({ map: buildingKindTexture("generic") }),
-};
 
 // River-only material — keep a typed handle so the animator can scroll the UV.
 const RIVER_TEX = waterTexture();
@@ -90,20 +74,6 @@ export function WorldMeshes({ built }: Props) {
 
   return (
     <group matrixAutoUpdate={false}>
-      {built.flatMap((e) =>
-        BUILDING_KINDS.map((k) => {
-          const m = e.data.buildings[k];
-          if (!m) return null;
-          return (
-            <mesh
-              key={`b_${e.key}_${k}`}
-              geometry={m.geometry}
-              material={BUILDING_MAT[k]}
-              matrixAutoUpdate={false}
-            />
-          );
-        }),
-      )}
       {built.flatMap((e) =>
         ROAD_ORDER.map((k) => {
           const g = e.data.roads[k];
