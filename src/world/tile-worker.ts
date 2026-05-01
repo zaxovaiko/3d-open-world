@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import earcut from "earcut";
 import type { OsmNode, OsmWay, OverpassResponse, RoadKind } from "../types";
 import { makeProjector, type Projector } from "./project";
 import {
@@ -47,7 +48,71 @@ type ClassifiedTile = {
   trees: OsmNode[];
   peaks: OsmNode[];
   pois: Record<PoiKind, OsmNode[]>;
+  // Closed-polygon water rings (lakes/ponds/reservoirs/riverbanks). Each
+  // entry is an outer ring in lon/lat space.
+  waterPolys: OsmGeomLatLon[][];
 };
+
+type OsmGeomLatLon = { lat: number; lon: number };
+
+function isWaterAreaTags(t: Record<string, string> | undefined): boolean {
+  if (!t) return false;
+  if (t.natural === "water") return true;
+  if (t.water) return true;
+  if (t.landuse === "reservoir" || t.landuse === "basin") return true;
+  if (t.waterway === "riverbank" || t.waterway === "dock") return true;
+  return false;
+}
+
+// Assemble multipolygon outer rings from a set of way segments by chaining
+// segments that share endpoints. Inner rings (holes) ignored — water bodies
+// with islands render as solid water; islands are approximate.
+function assembleRings(segments: OsmGeomLatLon[][]): OsmGeomLatLon[][] {
+  const rings: OsmGeomLatLon[][] = [];
+  const remaining = segments.filter((s) => s.length >= 2).map((s) => s.slice());
+  const eq = (a: OsmGeomLatLon, b: OsmGeomLatLon) => a.lat === b.lat && a.lon === b.lon;
+  while (remaining.length) {
+    const ring = remaining.shift()!;
+    let extended = true;
+    while (extended) {
+      extended = false;
+      const tail = ring[ring.length - 1];
+      const head = ring[0];
+      if (eq(tail, head) && ring.length > 3) break;
+      for (let i = 0; i < remaining.length; i++) {
+        const seg = remaining[i];
+        if (eq(tail, seg[0])) {
+          for (let k = 1; k < seg.length; k++) ring.push(seg[k]);
+          remaining.splice(i, 1);
+          extended = true;
+          break;
+        }
+        if (eq(tail, seg[seg.length - 1])) {
+          for (let k = seg.length - 2; k >= 0; k--) ring.push(seg[k]);
+          remaining.splice(i, 1);
+          extended = true;
+          break;
+        }
+        if (eq(head, seg[seg.length - 1])) {
+          for (let k = seg.length - 2; k >= 0; k--) ring.unshift(seg[k]);
+          remaining.splice(i, 1);
+          extended = true;
+          break;
+        }
+        if (eq(head, seg[0])) {
+          for (let k = 1; k < seg.length; k++) ring.unshift(seg[k]);
+          remaining.splice(i, 1);
+          extended = true;
+          break;
+        }
+      }
+    }
+    if (ring.length >= 4 && eq(ring[0], ring[ring.length - 1])) {
+      rings.push(ring);
+    }
+  }
+  return rings;
+}
 
 function classifyElements(data: OverpassResponse): ClassifiedTile {
   const buildings: OsmWay[] = [];
@@ -60,13 +125,20 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
   const pois: Record<PoiKind, OsmNode[]> = {
     lamp: [], bench: [], mailbox: [], hydrant: [], signpost: [],
   };
+  const waterPolys: OsmGeomLatLon[][] = [];
 
   for (const el of data.elements) {
     if (el.type === "way" && el.geometry?.length) {
       const t = el.tags ?? {};
+      const closed =
+        el.geometry.length >= 4 &&
+        el.geometry[0].lat === el.geometry[el.geometry.length - 1].lat &&
+        el.geometry[0].lon === el.geometry[el.geometry.length - 1].lon;
       if (t.building) {
         buildings.push(el);
-      } else if (t.waterway) {
+      } else if (closed && isWaterAreaTags(t)) {
+        waterPolys.push(el.geometry.slice(0, -1));
+      } else if (t.waterway && !isWaterAreaTags(t)) {
         roads.river.push(el);
       } else if (t.railway === "tram" || t.railway === "rail" || t.railway === "light_rail") {
         roads.tram.push(el);
@@ -104,9 +176,20 @@ function classifyElements(data: OverpassResponse): ClassifiedTile {
       else if (t.amenity === "post_box") pois.mailbox.push(el);
       else if (t.emergency === "fire_hydrant") pois.hydrant.push(el);
       else if (t.traffic_sign) pois.signpost.push(el);
+    } else if (el.type === "relation") {
+      const t = el.tags ?? {};
+      if (!isWaterAreaTags(t)) continue;
+      const outerSegs: OsmGeomLatLon[][] = [];
+      for (const m of el.members) {
+        if (m.type !== "way" || !m.geometry?.length) continue;
+        if (m.role && m.role !== "outer") continue;
+        outerSegs.push(m.geometry);
+      }
+      const rings = assembleRings(outerSegs);
+      for (const r of rings) waterPolys.push(r.slice(0, -1));
     }
   }
-  return { buildings, roads, trees, peaks, pois };
+  return { buildings, roads, trees, peaks, pois, waterPolys };
 }
 
 // --- Building build (typed arrays) ---
@@ -393,6 +476,48 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
   };
 }
 
+// --- Water polygon mesh (flat triangulation via earcut) ---
+
+const WATER_AREA_Y = 0.04;
+const WATER_TEX_SCALE = 16;
+
+function buildWaterAreaMesh(
+  polys: OsmGeomLatLon[][],
+  proj: Projector,
+): RoadRaw | null {
+  if (!polys.length) return null;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  let vIndex = 0;
+  for (const ring of polys) {
+    if (ring.length < 3) continue;
+    const flat: number[] = [];
+    for (const p of ring) {
+      const xz = proj.toLocal(p.lat, p.lon);
+      flat.push(xz.x, xz.z);
+    }
+    const tris = earcut(flat);
+    if (!tris.length) continue;
+    const base = vIndex;
+    for (let i = 0; i < flat.length; i += 2) {
+      const x = flat[i], z = flat[i + 1];
+      positions.push(x, WATER_AREA_Y, z);
+      uvs.push(x / WATER_TEX_SCALE, z / WATER_TEX_SCALE);
+      vIndex++;
+    }
+    for (const ti of tris) indices.push(base + ti);
+  }
+  if (!positions.length) return null;
+  const pos = new Float32Array(positions);
+  return {
+    positions: pos,
+    uvs: new Float32Array(uvs),
+    indices: new Uint32Array(indices),
+    bsphere: computeSphere(pos),
+  };
+}
+
 // --- Worker entry ---
 
 const ROAD_KINDS: RoadKind[] = [
@@ -412,6 +537,7 @@ export type WorkerOutput = {
   reqId: number;
   buildings: Partial<Record<BuildingKind, BuildingRaw>>;
   roads: Partial<Record<RoadKind, RoadRaw>>;
+  waterArea: RoadRaw | null;
   trees: TreeInstance[];
   peaks: PeakInstance[];
   // Centerlines for `car` roads only — flat (x, z) pairs per way. Used by
@@ -503,6 +629,11 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   }
   const waterHalfWidths = new Float32Array(waterHalfWidthsArr);
 
+  // Water-area polygons (lakes/ponds/reservoirs/riverbanks): triangulate each
+  // outer ring with earcut and emit as a single flat mesh at river y-level.
+  // UVs use a simple xz / TILE projection so the water texture tiles uniformly.
+  const waterArea = buildWaterAreaMesh(classified.waterPolys, proj);
+
   // POIs: project each node and pack flat (x, z) pairs per kind.
   const poiKinds: PoiKind[] = ["lamp", "bench", "mailbox", "hydrant", "signpost"];
   const poisOut = {} as Record<PoiKind, Float32Array>;
@@ -518,7 +649,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   }
 
   const out: WorkerOutput = {
-    reqId, buildings, roads, trees, peaks,
+    reqId, buildings, roads, waterArea, trees, peaks,
     carRoadCenterlines, tramCenterlines,
     waterCenterlines, waterHalfWidths,
     pois: poisOut,
@@ -530,6 +661,13 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   for (const k of Object.keys(roads) as RoadKind[]) {
     const r = roads[k]!;
     transfers.push(r.positions.buffer as ArrayBuffer, r.uvs.buffer as ArrayBuffer, r.indices.buffer as ArrayBuffer);
+  }
+  if (waterArea) {
+    transfers.push(
+      waterArea.positions.buffer as ArrayBuffer,
+      waterArea.uvs.buffer as ArrayBuffer,
+      waterArea.indices.buffer as ArrayBuffer,
+    );
   }
   for (const cl of carRoadCenterlines) transfers.push(cl.buffer as ArrayBuffer);
   for (const cl of tramCenterlines) transfers.push(cl.buffer as ArrayBuffer);

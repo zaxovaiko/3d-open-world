@@ -13,6 +13,7 @@ export type BuildingMesh = {
 export type Built = {
   buildings: Partial<Record<BuildingKind, BuildingMesh>>;
   roads: Partial<Record<RoadKind, THREE.BufferGeometry>>;
+  waterArea: THREE.BufferGeometry | null;
   trees: TreeInstance[];
   peaks: PeakInstance[];
   // Centerlines for car roads — used by AI traffic.
@@ -152,6 +153,7 @@ export function buildTileInWorker(
       const built: Built = {
         buildings,
         roads,
+        waterArea: out.waterArea ? roadGeometry(out.waterArea) : null,
         trees: out.trees,
         peaks: out.peaks,
         carRoadCenterlines: out.carRoadCenterlines,

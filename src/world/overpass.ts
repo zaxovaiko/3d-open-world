@@ -8,7 +8,7 @@ const ENDPOINTS = [
   "https://overpass.private.coffee/api/interpreter",
 ];
 
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v5";
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
 type CacheEntry = { ts: number; data: OverpassResponse };
@@ -32,6 +32,13 @@ function buildQuery(b: { south: number; west: number; north: number; east: numbe
   way["highway"](${bbox});
   way["railway"="tram"](${bbox});
   way["waterway"](${bbox});
+  way["natural"="water"](${bbox});
+  way["water"](${bbox});
+  way["landuse"="reservoir"](${bbox});
+  way["landuse"="basin"](${bbox});
+  relation["natural"="water"](${bbox});
+  relation["waterway"="riverbank"](${bbox});
+  relation["water"](${bbox});
   node["natural"="tree"](${bbox});
   node["natural"="peak"](${bbox});
   node["highway"="street_lamp"](${bbox});

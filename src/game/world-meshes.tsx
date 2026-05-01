@@ -74,6 +74,17 @@ export function WorldMeshes({ built }: Props) {
 
   return (
     <group matrixAutoUpdate={false}>
+      {built.map((e) =>
+        e.data.waterArea ? (
+          <mesh
+            key={`w_${e.key}`}
+            geometry={e.data.waterArea}
+            material={RIVER_MAT}
+            renderOrder={0}
+            matrixAutoUpdate={false}
+          />
+        ) : null,
+      )}
       {built.flatMap((e) =>
         ROAD_ORDER.map((k) => {
           const g = e.data.roads[k];

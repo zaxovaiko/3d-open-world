@@ -19,7 +19,21 @@ export type OsmNode = {
   tags?: OsmTags;
 };
 
-export type OsmElement = OsmWay | OsmNode;
+export type OsmRelationMember = {
+  type: "way" | "node" | "relation";
+  ref: number;
+  role: string;
+  geometry?: OsmGeomNode[];
+};
+
+export type OsmRelation = {
+  type: "relation";
+  id: number;
+  tags?: OsmTags;
+  members: OsmRelationMember[];
+};
+
+export type OsmElement = OsmWay | OsmNode | OsmRelation;
 
 export type OverpassResponse = {
   elements: OsmElement[];
