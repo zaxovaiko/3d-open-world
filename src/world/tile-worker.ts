@@ -225,20 +225,15 @@ function signedArea(ring: Pt[]): number {
   return a / 2;
 }
 
-// Per-kind AABB list. Buildings are rendered as instanced GLB models on the
-// main thread, sized + positioned from these AABBs — no per-tile geometry
-// transferred from the worker.
-type BuildingRaw = {
-  aabbs: BuildingAABB[];
-};
-
+// Every building kind renders as an extruded polygon (CCW ring → walls + roof)
+// with the per-kind facade texture. Worker emits one ExtrudedRaw per kind per
+// tile, plus the AABBs (used by the grass system to mask blades under
+// footprints).
 type PreparedBuilding = {
   kind: BuildingKind;
+  ring: Pt[];
+  h: number;
   aabb: BuildingAABB;
-  // Populated only for kinds rendered as extruded polygons (e.g. "house"),
-  // not for GLB-instance kinds.
-  ring?: Pt[];
-  h?: number;
 };
 
 function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): PreparedBuilding | null {
@@ -271,23 +266,52 @@ function prepareBuilding(w: OsmWay, kind: BuildingKind, proj: Projector): Prepar
     hy: h / 2,
     hz: (maxZ - minZ) / 2,
   };
-  // Houses render as extruded polygons (old style). Other kinds use GLB
-  // instances and only need the AABB.
-  if (kind === "house") return { kind, aabb, ring, h };
-  return { kind, aabb };
+  return { kind, ring, h, aabb };
 }
 
-function buildBuildingsRawFromPrepared(
-  prepared: PreparedBuilding[],
-  kind: BuildingKind,
-): BuildingRaw | null {
-  const aabbs: BuildingAABB[] = [];
-  for (let bi = 0; bi < prepared.length; bi++) {
-    const b = prepared[bi];
-    if (b.kind !== kind) continue;
-    aabbs.push(b.aabb);
+// Edge-shared neighbor occlusion. Walls between two buildings whose neighbor
+// is at least as tall are skipped to avoid z-fighting / wasted overdraw.
+// Quantize endpoints to 1cm so vertices from independent OSM ways with
+// near-equal coords still hash to the same key.
+type Occlusion = { edgeHeights: Map<string, number[]> };
+
+function edgeKey(ax: number, az: number, bx: number, bz: number): string {
+  const q = 100;
+  const a0 = Math.round(ax * q), a1 = Math.round(az * q);
+  const b0 = Math.round(bx * q), b1 = Math.round(bz * q);
+  if (a0 < b0 || (a0 === b0 && a1 < b1)) return `${a0},${a1}|${b0},${b1}`;
+  return `${b0},${b1}|${a0},${a1}`;
+}
+
+function computeOcclusion(prepared: PreparedBuilding[]): Occlusion {
+  const edgeHeights = new Map<string, number[]>();
+  for (const b of prepared) {
+    const ring = b.ring;
+    for (let k = 0; k < ring.length; k++) {
+      const p = ring[k];
+      const q = ring[(k + 1) % ring.length];
+      const key = edgeKey(p.x, p.z, q.x, q.z);
+      const list = edgeHeights.get(key);
+      if (list) list.push(b.h);
+      else edgeHeights.set(key, [b.h]);
+    }
   }
-  return aabbs.length ? { aabbs } : null;
+  return { edgeHeights };
+}
+
+function maxNeighborHeight(occ: Occlusion, key: string, selfH: number): number {
+  const list = occ.edgeHeights.get(key);
+  if (!list || list.length < 2) return -Infinity;
+  let max = -Infinity;
+  let removedSelf = false;
+  for (const h of list) {
+    if (!removedSelf && Math.abs(h - selfH) < 1e-6) {
+      removedSelf = true;
+      continue;
+    }
+    if (h > max) max = h;
+  }
+  return max;
 }
 
 // House facade UV scale: 8m horizontal, 30m vertical per repeat.
@@ -301,6 +325,8 @@ type ExtrudedRaw = {
   indices: Uint32Array;
   bsphere: BSphere;
 };
+
+type BuildingRaw = ExtrudedRaw & { aabbs: BuildingAABB[] };
 
 function computeIndexedNormals(positions: Float32Array, indices: Uint32Array): Float32Array {
   const normals = new Float32Array(positions.length);
@@ -330,14 +356,17 @@ function computeIndexedNormals(positions: Float32Array, indices: Uint32Array): F
 
 function buildExtrudedFromPrepared(
   prepared: PreparedBuilding[],
+  occ: Occlusion,
   kind: BuildingKind,
-): ExtrudedRaw | null {
+): BuildingRaw | null {
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
+  const aabbs: BuildingAABB[] = [];
   let baseV = 0;
   for (const b of prepared) {
-    if (b.kind !== kind || !b.ring || b.h == null) continue;
+    if (b.kind !== kind) continue;
+    aabbs.push(b.aabb);
     const ring = b.ring;
     const h = b.h;
     const N = ring.length;
@@ -357,7 +386,8 @@ function buildExtrudedFromPrepared(
     }
     baseV += N;
 
-    // Walls: outward-facing quads, perimeter UV.
+    // Walls: outward-facing quads, perimeter UV. Skip walls whose neighbor
+    // on the same edge is at least as tall (would be hidden anyway).
     let perim = 0;
     for (let i = 0; i < N; i++) {
       const j = (i + 1) % N;
@@ -368,6 +398,10 @@ function buildExtrudedFromPrepared(
       const u1 = (perim + len) / WINDOW_W_M;
       const v1 = h / WINDOW_H_M;
       perim += len;
+
+      const ek = edgeKey(ax, az, bx, bz);
+      if (maxNeighborHeight(occ, ek, h) >= h - 1e-3) continue;
+
       positions.push(ax, 0, az); uvs.push(u0, 0);
       positions.push(bx, 0, bz); uvs.push(u1, 0);
       positions.push(bx, h, bz); uvs.push(u1, v1);
@@ -385,6 +419,7 @@ function buildExtrudedFromPrepared(
     normals: computeIndexedNormals(pos, idx),
     indices: idx,
     bsphere: computeSphere(pos),
+    aabbs,
   };
 }
 
@@ -646,7 +681,6 @@ export type WorkerInput = {
 export type WorkerOutput = {
   reqId: number;
   buildings: Partial<Record<BuildingKind, BuildingRaw>>;
-  houseGeom: ExtrudedRaw | null;
   roads: Partial<Record<RoadKind, RoadRaw>>;
   waterArea: RoadRaw | null;
   trees: TreeInstance[];
@@ -682,14 +716,12 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     const p = prepareBuilding(w, kind, proj);
     if (p) prepared.push(p);
   }
+  const occ = computeOcclusion(prepared);
   const buildings: Partial<Record<BuildingKind, BuildingRaw>> = {};
   for (const k of BUILDING_KINDS) {
-    // Houses render as extruded polygons (separate path), not GLB instances.
-    if (k === "house") continue;
-    const r = buildBuildingsRawFromPrepared(prepared, k);
+    const r = buildExtrudedFromPrepared(prepared, occ, k);
     if (r) buildings[k] = r;
   }
-  const houseGeom = buildExtrudedFromPrepared(prepared, "house");
 
   const roads: Partial<Record<RoadKind, RoadRaw>> = {};
   for (const k of ROAD_KINDS) {
@@ -779,7 +811,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   }
 
   const out: WorkerOutput = {
-    reqId, buildings, houseGeom, roads, waterArea, trees, peaks,
+    reqId, buildings, roads, waterArea, trees, peaks,
     carRoadCenterlines, tramCenterlines,
     waterCenterlines, waterHalfWidths,
     pois: poisOut,
@@ -787,8 +819,16 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   };
 
   // Collect transferable buffers — zero-copy transfer to main thread.
-  // Buildings ship as plain AABB structs (no typed arrays), so nothing to transfer.
   const transfers: Transferable[] = [];
+  for (const k of Object.keys(buildings) as BuildingKind[]) {
+    const b = buildings[k]!;
+    transfers.push(
+      b.positions.buffer as ArrayBuffer,
+      b.uvs.buffer as ArrayBuffer,
+      b.normals.buffer as ArrayBuffer,
+      b.indices.buffer as ArrayBuffer,
+    );
+  }
   for (const k of Object.keys(roads) as RoadKind[]) {
     const r = roads[k]!;
     transfers.push(r.positions.buffer as ArrayBuffer, r.uvs.buffer as ArrayBuffer, r.indices.buffer as ArrayBuffer);
@@ -798,14 +838,6 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
       waterArea.positions.buffer as ArrayBuffer,
       waterArea.uvs.buffer as ArrayBuffer,
       waterArea.indices.buffer as ArrayBuffer,
-    );
-  }
-  if (houseGeom) {
-    transfers.push(
-      houseGeom.positions.buffer as ArrayBuffer,
-      houseGeom.uvs.buffer as ArrayBuffer,
-      houseGeom.normals.buffer as ArrayBuffer,
-      houseGeom.indices.buffer as ArrayBuffer,
     );
   }
   for (const cl of carRoadCenterlines) transfers.push(cl.buffer as ArrayBuffer);

@@ -8,12 +8,12 @@ import type { WorkerInput, WorkerOutput, PoiKind } from "./tile-worker";
 import type { SignKind } from "./road-signs";
 
 export type BuildingMesh = {
+  geometry: THREE.BufferGeometry;
   aabbs: BuildingAABB[];
 };
 
 export type Built = {
   buildings: Partial<Record<BuildingKind, BuildingMesh>>;
-  houseGeom: THREE.BufferGeometry | null;
   roads: Partial<Record<RoadKind, THREE.BufferGeometry>>;
   waterArea: THREE.BufferGeometry | null;
   trees: TreeInstance[];
@@ -148,25 +148,21 @@ export function buildTileInWorker(
     pending.set(reqId, (out) => {
       const buildings: Partial<Record<BuildingKind, BuildingMesh>> = {};
       for (const k of Object.keys(out.buildings) as BuildingKind[]) {
-        buildings[k] = { aabbs: out.buildings[k]!.aabbs };
+        const raw = out.buildings[k]!;
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.BufferAttribute(raw.positions, 3));
+        g.setAttribute("uv", new THREE.BufferAttribute(raw.uvs, 2));
+        g.setAttribute("normal", new THREE.BufferAttribute(raw.normals, 3));
+        g.setIndex(new THREE.BufferAttribute(raw.indices, 1));
+        attachSphere(g, raw.bsphere);
+        buildings[k] = { geometry: g, aabbs: raw.aabbs };
       }
       const roads: Partial<Record<RoadKind, THREE.BufferGeometry>> = {};
       for (const k of Object.keys(out.roads) as RoadKind[]) {
         roads[k] = roadGeometry(out.roads[k]!);
       }
-      let houseGeom: THREE.BufferGeometry | null = null;
-      if (out.houseGeom) {
-        const g = new THREE.BufferGeometry();
-        g.setAttribute("position", new THREE.BufferAttribute(out.houseGeom.positions, 3));
-        g.setAttribute("uv", new THREE.BufferAttribute(out.houseGeom.uvs, 2));
-        g.setAttribute("normal", new THREE.BufferAttribute(out.houseGeom.normals, 3));
-        g.setIndex(new THREE.BufferAttribute(out.houseGeom.indices, 1));
-        attachSphere(g, out.houseGeom.bsphere);
-        houseGeom = g;
-      }
       const built: Built = {
         buildings,
-        houseGeom,
         roads,
         waterArea: out.waterArea ? roadGeometry(out.waterArea) : null,
         trees: out.trees,

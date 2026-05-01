@@ -8,7 +8,7 @@ const ENDPOINTS = [
   "https://overpass.private.coffee/api/interpreter",
 ];
 
-const CACHE_VERSION = "v7";
+const CACHE_VERSION = "v8";
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
 type CacheEntry = { ts: number; data: OverpassResponse };
