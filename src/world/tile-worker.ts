@@ -427,6 +427,11 @@ type RoadRaw = {
 // Miter limit: clamp miter spike length so very sharp angles don't shoot
 // far past the joint. 4 = up to 4× halfW. Beyond that we cap.
 const MITER_LIMIT = 4;
+// Narrow paths (footway/bike) are jaggier in OSM and any miter spike past
+// ~1.5× halfW reads as a visible kink at typical viewing distance, so they
+// use a tighter cap.
+const NARROW_MITER_LIMIT = 1.5;
+const NARROW_KINDS = new Set<RoadKind>(["footway", "bike"]);
 
 // Chaikin's corner-cutting algorithm. Each interior vertex is replaced by
 // two new vertices at 1/4 and 3/4 along its adjacent edges, smoothing
@@ -456,6 +461,9 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
   // true overlap removal would be far more expensive.
   const Y_JITTER_STEP = 0.0008;
 
+  const isNarrow = NARROW_KINDS.has(kind);
+  const miterLimit = isNarrow ? NARROW_MITER_LIMIT : MITER_LIMIT;
+
   let wayIdx = 0;
   for (const w of ways) {
     const pts = w.geometry;
@@ -463,9 +471,11 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
     const halfW = widthFor(kind, w) / 2;
     const projected = pts.map((p) => proj.toLocal(p.lat, p.lon));
     // Chaikin corner-cutting: every interior vertex splits into two new
-    // points at 1/4 and 3/4 along each adjacent edge, so sharp OSM corners
-    // become rounded curves. Two passes is enough; endpoints stay fixed.
-    const local = chaikinSmooth(chaikinSmooth(projected));
+    // points at 1/4 and 3/4 along each adjacent edge. Narrow paths get two
+    // extra passes so the per-vertex miter offsets blend smoothly instead
+    // of leaving a fishbone silhouette.
+    let local = chaikinSmooth(chaikinSmooth(projected));
+    if (isNarrow) local = chaikinSmooth(chaikinSmooth(local));
     const yJitter = (wayIdx % 7 - 3) * Y_JITTER_STEP;
     const yBase = cfg.y + yJitter;
     wayIdx++;
@@ -507,7 +517,7 @@ function buildRoadsRaw(ways: OsmWay[], proj: Projector, kind: RoadKind): RoadRaw
           mx /= ml; mz /= ml;
           // dot(miter, edgeNormal) = cos(half-turn-angle); guards against ÷0.
           const d = mx * b.nx + mz * b.nz;
-          const scale = Math.min(halfW / Math.max(d, 1e-3), halfW * MITER_LIMIT);
+          const scale = Math.min(halfW / Math.max(d, 1e-3), halfW * miterLimit);
           offsets[i] = { ox: mx * scale, oz: mz * scale };
         }
       }

@@ -26,6 +26,23 @@ function tuneTexture(tex: THREE.CanvasTexture) {
   tex.generateMipmaps = true;
 }
 
+function hashKind(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function hexToRGBA(hex: string, alpha: number): string {
+  const v = hex.replace("#", "");
+  const r = parseInt(v.substring(0, 2), 16);
+  const g = parseInt(v.substring(2, 4), 16);
+  const b = parseInt(v.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 // Mulberry32 PRNG so noise is deterministic per call (no GC churn from Math.random).
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -68,14 +85,37 @@ type BuildingKindStyle = {
   windowCols: number;
   windowRows: number;
   windowFill: number;
+  // Optional decorative motifs drawn after the window grid.
+  brickCourse?: boolean; // horizontal brick rows over base
+  vSiding?: boolean; // vertical wood siding
+  metalRibs?: boolean; // industrial corrugated metal stripes
+  domeArch?: boolean; // arched window tops (religious / civic)
+  trimColor?: string; // floor-slab trim color override
 };
 
 const KIND_STYLES: Record<string, BuildingKindStyle> = {
-  residential: { base: "#d8b079", baseAlt: "#c89f68", window: "#3a2e22", windowLit: "#e8c46a", windowCols: 8, windowRows: 10, windowFill: 0.55 },
-  commercial: { base: "#6a8fb3", baseAlt: "#557da0", window: "#0f1d2e", windowLit: "#90b8da", windowCols: 12, windowRows: 14, windowFill: 0.85 },
-  industrial: { base: "#8b8a85", baseAlt: "#7a7975", window: "#2a2a26", windowLit: "#5a5a52", windowCols: 6, windowRows: 5, windowFill: 0.45 },
-  civic: { base: "#e8dcc4", baseAlt: "#d6c9ae", window: "#5b4a32", windowLit: "#cdb98a", windowCols: 10, windowRows: 12, windowFill: 0.5 },
-  generic: { base: "#c9c4bd", baseAlt: "#b6b1aa", window: "#3a4554", windowLit: "#9aa9bd", windowCols: 8, windowRows: 10, windowFill: 0.6 },
+  // Warm earth tones, 1-2 stories, small windows, vertical wood siding.
+  house:       { base: "#cf9a5a", baseAlt: "#b6864a", window: "#2c2014", windowLit: "#f0c46a", windowCols: 4, windowRows: 4,  windowFill: 0.5,  vSiding: true },
+  // Brick mid-rise, repeating window grid, brick courses.
+  apartments:  { base: "#a3543e", baseAlt: "#8a4733", window: "#221512", windowLit: "#e8b566", windowCols: 8, windowRows: 12, windowFill: 0.55, brickCourse: true, trimColor: "#5a2c1f" },
+  // Glass curtain wall — large lit windows, cool tones.
+  office:      { base: "#5b7da0", baseAlt: "#496789", window: "#0a1626", windowLit: "#9bc0e0", windowCols: 14, windowRows: 18, windowFill: 0.92 },
+  // Bright street level, big shop windows up top, warm signage colors.
+  retail:      { base: "#d97a4a", baseAlt: "#b86237", window: "#1c0e08", windowLit: "#ffd28a", windowCols: 6, windowRows: 5,  windowFill: 0.75, trimColor: "#3a1d0e" },
+  // Beige concrete with dark window slits, pipework hint.
+  industrial:  { base: "#8b8a85", baseAlt: "#6f6e69", window: "#1d1d1a", windowLit: "#3e3e36", windowCols: 6, windowRows: 4,  windowFill: 0.45, metalRibs: true },
+  // Corrugated metal warehouse, wide ribs, sparse small windows.
+  warehouse:   { base: "#7d8794", baseAlt: "#646f7d", window: "#161a1f", windowLit: "#2f3540", windowCols: 8, windowRows: 2,  windowFill: 0.35, metalRibs: true },
+  // Red-brick with white trim, regular tall windows.
+  school:      { base: "#b65a3e", baseAlt: "#9a4a31", window: "#1d1410", windowLit: "#f1d77a", windowCols: 8, windowRows: 6,  windowFill: 0.55, brickCourse: true, trimColor: "#f0eadf" },
+  // Cream hospital block, pale green window glass, frequent window grid.
+  hospital:    { base: "#e9e3d6", baseAlt: "#d8d0c0", window: "#3a4a3a", windowLit: "#cfe7d0", windowCols: 10, windowRows: 9,  windowFill: 0.6,  trimColor: "#a5b59b" },
+  // Stone facade, arched stained-glass windows.
+  religious:   { base: "#bdb39a", baseAlt: "#a59a82", window: "#3a2c4a", windowLit: "#9a6cd0", windowCols: 4, windowRows: 4,  windowFill: 0.45, domeArch: true, trimColor: "#766b54" },
+  // Limestone civic block, repeating tall arched windows.
+  civic:       { base: "#e8dcc4", baseAlt: "#cfc2a4", window: "#5b4a32", windowLit: "#cdb98a", windowCols: 10, windowRows: 8,  windowFill: 0.55, domeArch: true, trimColor: "#a89770" },
+  // Neutral fallback.
+  generic:     { base: "#c9c4bd", baseAlt: "#b6b1aa", window: "#3a4554", windowLit: "#9aa9bd", windowCols: 8, windowRows: 10, windowFill: 0.6 },
 };
 
 export function buildingKindTexture(kind: string): THREE.CanvasTexture {
@@ -87,18 +127,53 @@ export function buildingKindTexture(kind: string): THREE.CanvasTexture {
   c.height = H;
   const g = c.getContext("2d")!;
 
-  // Subtle vertical band gradient so the wall isn't a flat colour.
+  // Vertical band gradient so the wall isn't a flat colour.
   const grad = g.createLinearGradient(0, 0, 0, H);
   grad.addColorStop(0, s.base);
   grad.addColorStop(1, s.baseAlt);
   g.fillStyle = grad;
   g.fillRect(0, 0, W, H);
 
-  const r = rng(kind.length * 31 + s.windowCols * 13 + s.windowRows);
+  const r = rng(hashKind(kind) + s.windowCols * 13 + s.windowRows);
+
+  // Vertical wood siding (houses) — drawn under the window grid.
+  if (s.vSiding) {
+    g.strokeStyle = "rgba(0,0,0,0.16)";
+    g.lineWidth = 1;
+    for (let x = 0; x < W; x += 12) {
+      g.beginPath();
+      g.moveTo(x, 0);
+      g.lineTo(x, H);
+      g.stroke();
+    }
+  }
+
+  // Horizontal brick courses (apartments / school) — alternating offset rows.
+  if (s.brickCourse) {
+    g.strokeStyle = "rgba(0,0,0,0.18)";
+    g.lineWidth = 1;
+    const courseH = 10;
+    for (let y = 0; y < H; y += courseH) {
+      g.beginPath();
+      g.moveTo(0, y);
+      g.lineTo(W, y);
+      g.stroke();
+      const offset = (y / courseH) % 2 === 0 ? 0 : 16;
+      for (let x = offset; x < W; x += 32) {
+        g.beginPath();
+        g.moveTo(x, y);
+        g.lineTo(x, y + courseH);
+        g.stroke();
+      }
+    }
+  }
 
   // Window grid with deterministic per-window lit/dark variation.
   const cw = W / s.windowCols;
   const rh = H / s.windowRows;
+  const litChance = (kind === "office") ? 0.32
+    : (kind === "civic" || kind === "retail" || kind === "school" || kind === "hospital") ? 0.22
+    : 0.10;
   for (let row = 0; row < s.windowRows; row++) {
     for (let col = 0; col < s.windowCols; col++) {
       const padX = (cw * (1 - s.windowFill)) / 2;
@@ -109,24 +184,36 @@ export function buildingKindTexture(kind: string): THREE.CanvasTexture {
       const wh = rh * s.windowFill;
 
       // Frame.
-      g.fillStyle = "rgba(0,0,0,0.35)";
+      g.fillStyle = "rgba(0,0,0,0.4)";
       g.fillRect(x - 1, y - 1, ww + 2, wh + 2);
 
-      // Glass — ~25% lit on commercial/civic, fewer on residential.
-      const lit = (kind === "commercial" || kind === "civic") ? r() < 0.28 : r() < 0.12;
+      // Glass.
+      const lit = r() < litChance;
       g.fillStyle = lit ? s.windowLit : s.window;
-      g.fillRect(x, y, ww, wh);
+      if (s.domeArch) {
+        // Arched window top — half-circle on a rectangle.
+        const archH = ww * 0.45;
+        g.beginPath();
+        g.moveTo(x, y + wh);
+        g.lineTo(x, y + archH);
+        g.arc(x + ww / 2, y + archH, ww / 2, Math.PI, 0, false);
+        g.lineTo(x + ww, y + wh);
+        g.closePath();
+        g.fill();
+      } else {
+        g.fillRect(x, y, ww, wh);
+      }
 
       // Vertical mullion + horizontal sill on each window.
-      g.fillStyle = "rgba(0,0,0,0.25)";
+      g.fillStyle = "rgba(0,0,0,0.28)";
       g.fillRect(x + ww / 2 - 0.5, y, 1, wh);
       g.fillRect(x, y + wh / 2 - 0.5, ww, 1);
     }
   }
 
-  // Floor slab lines between rows.
-  g.strokeStyle = "rgba(0,0,0,0.18)";
-  g.lineWidth = 1.5;
+  // Floor slab lines between rows. Trim color overrides default if set.
+  g.strokeStyle = s.trimColor ? hexToRGBA(s.trimColor, 0.55) : "rgba(0,0,0,0.18)";
+  g.lineWidth = s.trimColor ? 2 : 1.5;
   for (let row = 1; row < s.windowRows; row++) {
     g.beginPath();
     g.moveTo(0, row * rh);
@@ -134,9 +221,9 @@ export function buildingKindTexture(kind: string): THREE.CanvasTexture {
     g.stroke();
   }
 
-  // Style-specific overlays.
-  if (kind === "industrial") {
-    g.strokeStyle = "rgba(0,0,0,0.16)";
+  // Corrugated metal ribs — industrial / warehouse.
+  if (s.metalRibs) {
+    g.strokeStyle = "rgba(0,0,0,0.18)";
     g.lineWidth = 1;
     for (let x = 0; x < W; x += 8) {
       g.beginPath();
@@ -144,19 +231,16 @@ export function buildingKindTexture(kind: string): THREE.CanvasTexture {
       g.lineTo(x, H);
       g.stroke();
     }
-  }
-  if (kind === "civic") {
-    g.strokeStyle = "rgba(0,0,0,0.12)";
-    g.lineWidth = 1;
-    for (let row = 0; row < s.windowRows; row++) {
+    g.strokeStyle = "rgba(255,255,255,0.06)";
+    for (let x = 4; x < W; x += 8) {
       g.beginPath();
-      g.moveTo(0, (row + 0.5) * rh);
-      g.lineTo(W, (row + 0.5) * rh);
+      g.moveTo(x, 0);
+      g.lineTo(x, H);
       g.stroke();
     }
   }
 
-  // Subtle vertical streaks (rain stains) — adds realism, hides repetition.
+  // Vertical rain streaks for weathering — adds realism, hides repetition.
   for (let i = 0; i < 30; i++) {
     g.fillStyle = `rgba(0,0,0,${0.04 + r() * 0.05})`;
     const sx = r() * W;

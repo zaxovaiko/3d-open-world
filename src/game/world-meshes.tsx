@@ -20,11 +20,17 @@ import {
 } from "../world/textures";
 
 export const BUILDING_MAT: Record<BuildingKind, THREE.Material> = {
-  residential: new THREE.MeshLambertMaterial({ map: buildingKindTexture("residential") }),
-  commercial: new THREE.MeshLambertMaterial({ map: buildingKindTexture("commercial") }),
-  industrial: new THREE.MeshLambertMaterial({ map: buildingKindTexture("industrial") }),
-  civic: new THREE.MeshLambertMaterial({ map: buildingKindTexture("civic") }),
-  generic: new THREE.MeshLambertMaterial({ map: buildingKindTexture("generic") }),
+  house:       new THREE.MeshLambertMaterial({ map: buildingKindTexture("house") }),
+  apartments:  new THREE.MeshLambertMaterial({ map: buildingKindTexture("apartments") }),
+  office:      new THREE.MeshLambertMaterial({ map: buildingKindTexture("office") }),
+  retail:      new THREE.MeshLambertMaterial({ map: buildingKindTexture("retail") }),
+  industrial:  new THREE.MeshLambertMaterial({ map: buildingKindTexture("industrial") }),
+  warehouse:   new THREE.MeshLambertMaterial({ map: buildingKindTexture("warehouse") }),
+  school:      new THREE.MeshLambertMaterial({ map: buildingKindTexture("school") }),
+  hospital:    new THREE.MeshLambertMaterial({ map: buildingKindTexture("hospital") }),
+  religious:   new THREE.MeshLambertMaterial({ map: buildingKindTexture("religious") }),
+  civic:       new THREE.MeshLambertMaterial({ map: buildingKindTexture("civic") }),
+  generic:     new THREE.MeshLambertMaterial({ map: buildingKindTexture("generic") }),
 };
 
 // River-only material — keep a typed handle so the animator can scroll the UV.

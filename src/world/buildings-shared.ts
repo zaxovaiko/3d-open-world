@@ -1,14 +1,29 @@
+// Coarse-grained building kinds. Each maps to a distinct facade texture and,
+// where helpful, a distinct roof shape in the worker. Mapping below is
+// derived from OSM `building=*` values — see classifyBuilding().
 export type BuildingKind =
-  | "residential"
-  | "commercial"
+  | "house"
+  | "apartments"
+  | "office"
+  | "retail"
   | "industrial"
+  | "warehouse"
+  | "school"
+  | "hospital"
+  | "religious"
   | "civic"
   | "generic";
 
 export const BUILDING_KINDS: BuildingKind[] = [
-  "residential",
-  "commercial",
+  "house",
+  "apartments",
+  "office",
+  "retail",
   "industrial",
+  "warehouse",
+  "school",
+  "hospital",
+  "religious",
   "civic",
   "generic",
 ];
@@ -22,30 +37,44 @@ export type BuildingAABB = {
   hz: number;
 };
 
-const RESIDENTIAL = new Set([
-  "residential", "house", "apartments", "terrace", "dormitory",
-  "detached", "semidetached_house", "bungalow", "cabin", "static_caravan",
+const HOUSE = new Set([
+  "house", "detached", "semidetached_house", "bungalow", "cabin",
+  "static_caravan", "terrace", "farm",
 ]);
-const COMMERCIAL = new Set([
-  "commercial", "retail", "office", "supermarket", "kiosk", "hotel", "shop",
+const APARTMENTS = new Set([
+  "apartments", "residential", "dormitory", "barracks",
 ]);
-const INDUSTRIAL = new Set([
-  "industrial", "warehouse", "factory", "manufacture", "hangar",
-  "garage", "garages", "storage_tank", "silo",
+const OFFICE = new Set(["office", "commercial", "hotel"]);
+const RETAIL = new Set(["retail", "supermarket", "kiosk", "shop", "mall"]);
+const INDUSTRIAL = new Set(["industrial", "factory", "manufacture"]);
+const WAREHOUSE = new Set([
+  "warehouse", "hangar", "garage", "garages", "storage_tank", "silo",
+]);
+const SCHOOL = new Set([
+  "school", "university", "college", "kindergarten",
+]);
+const HOSPITAL = new Set(["hospital", "clinic"]);
+const RELIGIOUS = new Set([
+  "church", "cathedral", "chapel", "mosque", "synagogue", "temple", "shrine",
 ]);
 const CIVIC = new Set([
-  "school", "hospital", "university", "college", "kindergarten",
-  "church", "cathedral", "mosque", "synagogue", "temple", "chapel",
   "government", "public", "civic", "train_station", "transportation",
-  "stadium", "museum", "library",
+  "stadium", "museum", "library", "fire_station", "police", "courthouse",
+  "townhall",
 ]);
 
 export function classifyBuilding(tags: Record<string, string> | undefined): BuildingKind {
   const b = tags?.building;
-  if (!b || b === "yes") return "generic";
-  if (RESIDENTIAL.has(b)) return "residential";
-  if (COMMERCIAL.has(b)) return "commercial";
+  if (!b || b === "yes" || b === "building") return "generic";
+  if (HOUSE.has(b)) return "house";
+  if (APARTMENTS.has(b)) return "apartments";
+  if (OFFICE.has(b)) return "office";
+  if (RETAIL.has(b)) return "retail";
   if (INDUSTRIAL.has(b)) return "industrial";
+  if (WAREHOUSE.has(b)) return "warehouse";
+  if (SCHOOL.has(b)) return "school";
+  if (HOSPITAL.has(b)) return "hospital";
+  if (RELIGIOUS.has(b)) return "religious";
   if (CIVIC.has(b)) return "civic";
   return "generic";
 }
