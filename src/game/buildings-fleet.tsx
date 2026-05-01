@@ -47,21 +47,7 @@ function extractVariant(scene: THREE.Group): Variant {
     baked.computeBoundingSphere();
 
     const src = Array.isArray(m.material) ? (m.material[0] as THREE.Material) : (m.material as THREE.Material);
-    let mat: THREE.Material;
-    if (src instanceof THREE.MeshStandardMaterial || src instanceof THREE.MeshPhysicalMaterial) {
-      mat = new THREE.MeshLambertMaterial({
-        map: src.map,
-        color: src.color,
-        transparent: src.transparent,
-        opacity: src.opacity,
-        alphaTest: src.alphaTest,
-        side: src.side,
-        vertexColors: src.vertexColors,
-      });
-    } else {
-      mat = src;
-    }
-    subs.push({ geometry: baked, material: mat });
+    subs.push({ geometry: baked, material: src });
   });
 
   const box = new THREE.Box3();
@@ -176,19 +162,23 @@ function SubInstanced({
     const pos = new THREE.Vector3();
     const quat = new THREE.Quaternion();
     const scl = new THREE.Vector3();
+    const SETBACK = 0.92;
     for (let i = 0; i < aabbs.length; i++) {
       const a = aabbs[i];
-      const targetX = a.hx * 2;
-      const targetZ = a.hz * 2;
+      const targetX = a.hx * 2 * SETBACK;
+      const targetZ = a.hz * 2 * SETBACK;
       const targetY = a.hy * 2;
-      // Rotate 90° around Y when the model's long axis is opposite to the
-      // footprint's long axis — keeps the model's long facade along the
-      // street side instead of stretching the short axis.
       const targetLongX = targetX >= targetZ;
       const yaw = targetLongX === variant.longAxisX ? 0 : Math.PI / 2;
-      const sx = (yaw === 0 ? targetX : targetZ) / variant.sizeX;
-      const sz = (yaw === 0 ? targetZ : targetX) / variant.sizeZ;
-      const sy = targetY / variant.sizeY;
+      const fitX = (yaw === 0 ? targetX : targetZ) / variant.sizeX;
+      const fitZ = (yaw === 0 ? targetZ : targetX) / variant.sizeZ;
+      // Uniform horizontal scale: model fits inside footprint without distortion.
+      const sxz = Math.min(fitX, fitZ);
+      const sx = sxz;
+      const sz = sxz;
+      // Height: keep model height proportional to horizontal scale, but allow
+      // up to 3× stretch toward the OSM-tagged height before clamping.
+      const sy = Math.min(Math.max(targetY / variant.sizeY, sxz * 0.5), sxz * 3);
       pos.set(a.cx, -variant.minY * sy, a.cz);
       quat.setFromAxisAngle(_yAxis, yaw);
       scl.set(sx, sy, sz);
